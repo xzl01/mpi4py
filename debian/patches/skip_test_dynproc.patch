@@ -1,0 +1,22 @@
+Index: mpi4py/test/test_dynproc.py
+===================================================================
+--- mpi4py.orig/test/test_dynproc.py	2021-09-17 01:50:10.767952887 +0200
++++ mpi4py/test/test_dynproc.py	2021-09-17 01:51:49.985127464 +0200
+@@ -5,6 +5,8 @@
+ except ImportError:
+     socket = None
+ 
++import platform
++test_machine = platform.machine()
+ 
+ def ch4_ucx():
+     return 'ch4:ucx' in MPI.Get_library_version()
+@@ -160,6 +162,8 @@
+ 
+     @unittest.skipIf(MPI.COMM_WORLD.Get_size() < 2, 'mpi-world-size<2')
+     @unittest.skipIf(socket is None, 'socket')
++    @unittest.skipIf('ia64' in test_machine or 'riscv64' in test_machine,
++       "TestDPM.testJoin stalls on {}".format(test_machine))
+     def testJoin(self):
+         size = MPI.COMM_WORLD.Get_size()
+         rank = MPI.COMM_WORLD.Get_rank()

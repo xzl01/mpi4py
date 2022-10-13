@@ -1,0 +1,7 @@
+up_no_modlibs
+fix_docs.patch
+skip_ppc_failing_tests.patch
+skip_failing_test_rma.patch
+skip_spawn_tests.patch
+test_align_PR92.patch
+skip_test_dynproc.patch
