@@ -23,6 +23,9 @@ def getoptionparser():
     parser.add_option("-c", "--catch",
                       action="store_true", dest="catchbreak", default=False,
                       help="catch Control-C and display results")
+    parser.add_option("-k", "--pattern", type="string",
+                      action="append", dest="patterns", default=[],
+                      help="only run tests which match the given substring")
     parser.add_option("--no-builddir",
                       action="store_false", dest="builddir", default=True,
                       help="disable testing from build directory")
@@ -73,11 +76,20 @@ def getoptionparser():
     return parser
 
 def getbuilddir():
-    from distutils.util import get_platform
-    plat_name, (x, y) = get_platform(), sys.version_info[:2]
-    s = os.path.join("build", "lib.%s-%d.%d" % (plat_name, x, y))
-    if hasattr(sys, 'gettotalrefcount'): s += '-pydebug'
-    return s
+    try:
+        try:
+            from setuptools.dist import Distribution
+        except ImportError:
+            from distutils.dist import Distribution
+        try:
+            from setuptools.command.build import build
+        except ImportError:
+            from distutils.command.build import build
+        cmd_obj = build(Distribution())
+        cmd_obj.finalize_options()
+        return cmd_obj.build_platlib
+    except Exception:
+        return None
 
 def setup_python(options):
     rootdir = os.path.dirname(os.path.dirname(__file__))
@@ -204,6 +216,10 @@ def load_tests(options, args):
         mpiunittest.skipMPI = lambda p, *c: lambda f: f
     # Load tests and populate suite
     testloader = unittest.TestLoader()
+    if options.patterns:
+        testloader.testNamePatterns = [
+            ('*%s*' % p) if ('*' not in p) else p
+            for p in options.patterns]
     testsuite = unittest.TestSuite()
     for testname in testnames:
         module = __import__(testname)

@@ -49,8 +49,8 @@ cdef object getEnv(object rc, const char name[], object value):
     if cvalue == NULL: return value
     cdef object ovalue = pystr(cvalue)
     cdef bytes  bvalue = PyBytes_FromString(cvalue).lower()
-    if bvalue in (b'true',  b'yes', b'on',  b'1'): ovalue = True
-    if bvalue in (b'false', b'no',  b'off', b'0'): ovalue = False
+    if bvalue in (b'true',  b'yes', b'on',  b'y', b'1'): ovalue = True
+    if bvalue in (b'false', b'no',  b'off', b'n', b'0'): ovalue = False
     try: setattr(rc, pystr(name), ovalue)
     except: pass
     return ovalue
@@ -95,8 +95,10 @@ cdef int getOptions(Options* opts) except -1:
     except: pass
     try: errors = rc.errors
     except: pass
+    initialize   = getEnv(rc, b"initialize",   initialize)
     threads      = getEnv(rc, b"threads",      threads)
     thread_level = getEnv(rc, b"thread_level", thread_level)
+    finalize     = getEnv(rc, b"finalize",     finalize)
     fast_reduce  = getEnv(rc, b"fast_reduce",  fast_reduce)
     recv_mprobe  = getEnv(rc, b"recv_mprobe",  recv_mprobe)
     errors       = getEnv(rc, b"errors",       errors)

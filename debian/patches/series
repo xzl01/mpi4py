@@ -3,5 +3,7 @@ fix_docs.patch
 skip_ppc_failing_tests.patch
 skip_failing_test_rma.patch
 skip_spawn_tests.patch
-test_align_PR92.patch
 skip_test_dynproc.patch
+docs_privacy.patch
+io_long_double_i386_2d868d7.patch
+skip_testPackUnpackExternal_sparc64.patch

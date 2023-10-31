@@ -17,7 +17,7 @@ oriented interface which closely follows MPI-2 C++ bindings.
 
 """
 
-__version__ = '3.1.1'
+__version__ = '3.1.5'
 __author__ = 'Lisandro Dalcin'
 __credits__ = 'MPI Forum, MPICH Team, Open MPI Team'
 
@@ -107,7 +107,7 @@ def profile(name, *, path=None, logfile=None):
     ----------
     name : str
        Name of the profiler library to load.
-    path : Sequence[str], optional
+    path : `sequence` of str, optional
        Additional paths to search for the profiler.
     logfile : str, optional
        Filename prefix for dumping profiler output.

@@ -23,9 +23,17 @@ cdef inline const char* Datatype2String(MPI_Datatype datatype) nogil:
         elif sizeof(MPI_Offset) == sizeof(long)      : return "l"
         elif sizeof(MPI_Offset) == sizeof(int)       : return "i"
         else                                         : return NULL
+    elif datatype == MPI_COUNT :
+        if   sizeof(MPI_Count)  == sizeof(MPI_Aint)  : return "p"
+        elif sizeof(MPI_Count)  == sizeof(long long) : return "q"
+        elif sizeof(MPI_Count)  == sizeof(long)      : return "l"
+        elif sizeof(MPI_Count)  == sizeof(int)       : return "i"
+        else                                         : return NULL
     # C - character
     elif datatype == MPI_CHAR  : return "c"
-    elif datatype == MPI_WCHAR : return "U"
+    elif datatype == MPI_WCHAR :
+        if sizeof(wchar_t) == 4: return "U"
+        else                   : return NULL
     # C - (signed) integral
     elif datatype == MPI_SIGNED_CHAR : return "b"
     elif datatype == MPI_SHORT       : return "h"

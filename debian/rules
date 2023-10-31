@@ -65,7 +65,7 @@ override_dh_auto_build-arch:
 
 override_dh_auto_build-indep: override_dh_auto_build-arch
 	PYTHONPATH=`pybuild --print "{build_dir}"` \
-	 make -C docs/source/usrman/ html man SPHINXOPTS="-D today=\"$(BUILD_DATE)\""
+	 make -C docs/source/usrman/ html man info latexpdf SPHINXOPTS="-D today=\"$(BUILD_DATE)\""
 
 override_dh_auto_install:
 	dh_auto_install
@@ -113,7 +113,7 @@ override_dh_installchangelogs:
 
 ## Immediately useable documentation
 override_dh_compress:
-	dh_compress -X.py -X.html -X.css -X.jpg -X.txt -X.js -X.json -X.rtc -X.par -X.bin -Xobjects.inv
+	dh_compress -X.py -X.html -X.css -X.jpg -X.txt -X.js -X.json -X.rtc -X.par -X.bin -Xobjects.inv -X.pdf
 
 override_dh_dwz:
 	echo "dh_dwz is currently deactivated since it generates an error: \".debug_line reference above end of section\""

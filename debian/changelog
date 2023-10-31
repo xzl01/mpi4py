@@ -1,3 +1,90 @@
+mpi4py (3.1.5-1) unstable; urgency=medium
+
+  * Team upload.
+  * New upstream release.
+  * Standards-Version: 4.6.2
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 30 Oct 2023 10:38:49 +0100
+
+mpi4py (3.1.4-2) unstable; urgency=medium
+
+  * Team upload.
+  * debian patch skip_testPackUnpackExternal_sparc64.patch skips
+    testPackUnpackExternal on sparc64. See upstream Issue#147.
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 07 Nov 2022 17:27:32 +0100
+
+mpi4py (3.1.4-1) unstable; urgency=medium
+
+  * Team upload.
+  * New upstream release.
+    - applies debian patches contiguity_check_9ccf55f.patch,
+      numpy_1.22_DLPack_e3e4e02.patch, test_ipv6.patch
+
+ -- Drew Parsons <dparsons@debian.org>  Thu, 03 Nov 2022 17:54:51 +0100
+
+mpi4py (3.1.3-4) unstable; urgency=medium
+
+  * Team upload.
+  * apply patches recommended upstream from maint branch
+    - contiguity_check_9ccf55f.patch
+    - numpy_1.22_DLPack_e3e4e02.patch applies commit e3e4e02 after
+      c252c9c and 069bfde to pass with numpy 1.22.
+  * update debian patch test_ipv6.patch against upstream PR#241
+
+ -- Drew Parsons <dparsons@debian.org>  Thu, 11 Aug 2022 16:21:39 +0200
+
+mpi4py (3.1.3-3) unstable; urgency=medium
+
+  * Team upload.
+  * debian patch test_ipv6.patch tests available internet sockets in
+    order to use IPv4 or IPv6 in test_dynproc.TestDPM.testJoin.
+    Select IPv4 if available, else IPv6, UNIX or the first available
+    (undocumented) socket family. Closes: #1015912.
+  * Standards-Version: 4.6.1
+
+ -- Drew Parsons <dparsons@debian.org>  Tue, 09 Aug 2022 15:18:47 +0200
+
+mpi4py (3.1.3-2) unstable; urgency=medium
+
+  * Team upload.
+  * debian patch io_long_double_i386_2d868d7.patch applies upstream
+    commit 2d868d7 to skip test_io long double tests on i386.
+    See upstream mpi4py issue #105, openmpi issue #10287.
+    Closes: #998106.
+
+ -- Drew Parsons <dparsons@debian.org>  Sat, 16 Apr 2022 12:21:10 +0200
+
+mpi4py (3.1.3-1) unstable; urgency=medium
+
+  * Team upload.
+  * New upstream release.
+    - adds missing support for MPI.BOTTOM to generalized all-to-all
+      collectives
+    - no longer provides mpi4py.pdf or info files. Build from source.
+      Build-Depends-Indep: texinfo, texlive, latexmk, tex-gyre,
+      texlive-latex-extra. Don't compress pdf file.
+  * debian patch docs_privacy.patch disables inclusion of
+    googletagmanager in docs in order to maintain privacy.
+
+ -- Drew Parsons <dparsons@debian.org>  Sun, 05 Dec 2021 22:28:02 +0100
+
+mpi4py (3.1.2-2) unstable; urgency=medium
+
+  * Team upload.
+  * update debian/control Homepage and debian/watch to
+    https://github.com/mpi4py/mpi4py
+
+ -- Drew Parsons <dparsons@debian.org>  Sat, 20 Nov 2021 13:26:18 +0100
+
+mpi4py (3.1.2-1) experimental; urgency=medium
+
+  * Team upload.
+  * New upstream release.
+    - applies debian patch test_align_PR92.patch
+
+ -- Drew Parsons <dparsons@debian.org>  Fri, 05 Nov 2021 22:22:08 +0100
+
 mpi4py (3.1.1-8) unstable; urgency=medium
 
   * Team upload.

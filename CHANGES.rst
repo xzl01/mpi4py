@@ -6,6 +6,58 @@ CHANGES: MPI for Python
 :Contact: dalcinl@gmail.com
 
 
+Release 3.1.5 [2023-10-04]
+==========================
+
+.. warning:: This is the last release supporting Python 2.
+
+* Rebuild C sources with Cython 0.29.36 to support Python 3.12.
+
+
+Release 3.1.4 [2022-11-02]
+==========================
+
+.. warning:: This is the last release supporting Python 2.
+
+* Rebuild C sources with Cython 0.29.32 to support Python 3.11.
+
+* Fix contiguity check for DLPack and CAI buffers.
+
+* Workaround build failures with setuptools v60.
+
+
+Release 3.1.3 [2021-11-25]
+==========================
+
+.. warning:: This is the last release supporting Python 2.
+
+* Add missing support for `MPI.BOTTOM` to generalized all-to-all collectives.
+
+
+Release 3.1.2 [2021-11-04]
+==========================
+
+.. warning:: This is the last release supporting Python 2.
+
+* `mpi4py.futures`: Add `_max_workers` property to `MPIPoolExecutor`.
+
+* `mpi4py.util.dtlib`: Fix computation of alignment for predefined datatypes.
+
+* `mpi4py.util.pkl5`: Fix deadlock when using ``ssend()`` + ``mprobe()``.
+
+* `mpi4py.util.pkl5`: Add environment variable `MPI4PY_PICKLE_THRESHOLD`.
+
+* `mpi4py.rc`: Interpret ``"y"`` and ``"n"`` strings as boolean values.
+
+* Fix/add typemap/typestr for `MPI.WCHAR`/`MPI.COUNT` datatypes.
+
+* Minor fixes and additions to documentation.
+
+* Minor fixes to typing support.
+
+* Support for local version identifier (PEP-440).
+
+
 Release 3.1.1 [2021-08-14]
 ==========================
 

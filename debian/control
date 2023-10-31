@@ -13,10 +13,13 @@ Build-Depends: debhelper-compat (= 13),
                python3-all-dev,
                python3-numpy,
                python3-sphinx
-Standards-Version: 4.6.0
+Build-Depends-Indep: texinfo, texlive,
+ latexmk, tex-gyre,
+ texlive-latex-extra
+Standards-Version: 4.6.2
 Vcs-Browser: https://salsa.debian.org/science-team/mpi4py
 Vcs-Git: https://salsa.debian.org/science-team/mpi4py.git
-Homepage: https://bitbucket.org/mpi4py/mpi4py
+Homepage: https://github.com/mpi4py/mpi4py
 
 Package: python3-mpi4py
 Architecture: any

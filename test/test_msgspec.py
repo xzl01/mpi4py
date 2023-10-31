@@ -447,15 +447,18 @@ class TestMessageSimpleNumPy(unittest.TestCase,
         sbuf = numpy.ones([3])
         rbuf = numpy.zeros([3])
         rbuf.flags.writeable = False
-        self.assertRaises((BufferError, ValueError),
-                          Sendrecv, sbuf, rbuf)
+        self.assertRaises(
+            (BufferError, ValueError, TypeError),
+            Sendrecv, sbuf, rbuf
+        )
 
     def testNotContiguous(self):
         sbuf = numpy.ones([3,2])[:,0]
         rbuf = numpy.zeros([3])
-        sbuf.flags.writeable = False
-        self.assertRaises((BufferError, ValueError),
-                          Sendrecv, sbuf, rbuf)
+        self.assertRaises(
+            (BufferError, ValueError, TypeError),
+            Sendrecv, sbuf, rbuf,
+        )
 
 
 @unittest.skipIf(array is None, 'array')
@@ -662,6 +665,18 @@ class TestMessageDLPackCPUBuf(unittest.TestCase):
         self.assertRaises(BufferError, MPI.Get_address, buf)
         del s
         #
+        dltensor.ndim, dltensor.shape, dltensor.strides = \
+            dlpack.make_dl_shape([1, 3, 1], order='C')
+        s = dltensor.strides
+        MPI.Get_address(buf)
+        for i in range(4):
+            for j in range(4):
+                s[0], s[2] = i, j
+                MPI.Get_address(buf)
+        s[1] = 0
+        self.assertRaises(BufferError, MPI.Get_address, buf)
+        del s
+        #
         del dltensor
 
     def testByteOffset(self):
@@ -689,8 +704,12 @@ class TestMessageCAIBuf(unittest.TestCase):
     def testNonContiguous(self):
         smsg = CAIBuf('i', [1,2,3])
         rmsg = CAIBuf('i', [0,0,0])
+        Sendrecv(smsg, rmsg)
         strides = rmsg.__cuda_array_interface__['strides']
-        bad_strides = strides[:-1] + (7,)
+        good_strides = strides[:-2] + (0, 7)
+        rmsg.__cuda_array_interface__['strides'] = good_strides
+        Sendrecv(smsg, rmsg)
+        bad_strides = (7,) + strides[1:]
         rmsg.__cuda_array_interface__['strides'] = bad_strides
         self.assertRaises(BufferError, Sendrecv, smsg, rmsg)
 
@@ -1126,6 +1145,23 @@ class TestMessageVectorW(unittest.TestCase):
         self.assertRaises(ValueError, f)
         MPI.Free_mem(sbuf)
         MPI.Free_mem(rbuf)
+
+    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
+    def testMessageBottom(self):
+        sbuf = b"abcxyz"
+        rbuf = bytearray(6)
+        saddr = MPI.Get_address(sbuf)
+        raddr = MPI.Get_address(rbuf)
+        stype = MPI.Datatype.Create_struct([6], [saddr], [MPI.CHAR]).Commit()
+        rtype = MPI.Datatype.Create_struct([6], [raddr], [MPI.CHAR]).Commit()
+        smsg = [MPI.BOTTOM,  [1], [0] , [stype]]
+        rmsg = [MPI.BOTTOM, ([1], [0]), [rtype]]
+        try:
+            Alltoallw(smsg, rmsg)
+            self.assertEqual(sbuf, rbuf)
+        finally:
+            stype.Free()
+            rtype.Free()
 
     @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytes(self):

@@ -40,7 +40,12 @@ def version():
     srcdir = os.path.join(topdir, 'src')
     with open(os.path.join(srcdir, 'mpi4py', '__init__.py')) as f:
         m = re.search(r"__version__\s*=\s*'(.*)'", f.read())
-        return m.groups()[0]
+    public_version = m.groups()[0]
+    local_version = os.environ.get('MPI4PY_LOCAL_VERSION')
+    if local_version:
+        return '{0}+{1}'.format(public_version, local_version)
+    else:
+        return public_version
 
 def description():
     with open(os.path.join(topdir, 'DESCRIPTION.rst')) as f:
@@ -77,6 +82,8 @@ Programming Language :: Python :: 3.7
 Programming Language :: Python :: 3.8
 Programming Language :: Python :: 3.9
 Programming Language :: Python :: 3.10
+Programming Language :: Python :: 3.11
+Programming Language :: Python :: 3.12
 Programming Language :: Python :: Implementation :: CPython
 Programming Language :: Python :: Implementation :: PyPy
 Topic :: Scientific/Engineering
@@ -480,7 +487,7 @@ def run_setup():
         has_git = os.path.isdir(os.path.join(topdir, '.git'))
         has_hg  = os.path.isdir(os.path.join(topdir, '.hg'))
         if not has_src or has_git or has_hg:
-            setup_args['setup_requires'] += ['Cython>='+CYTHON]
+            setup_args['setup_requires'] += ['Cython>='+CYTHON+',<3.0.0']
     #
     setup(
         packages = [

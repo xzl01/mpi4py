@@ -11,9 +11,9 @@ Last-Update: 2012-06-01
 
 Index: mpi4py/setup.py
 ===================================================================
---- mpi4py.orig/setup.py	2021-08-14 18:27:08.409517252 +0200
-+++ mpi4py/setup.py	2021-08-14 18:27:08.405517907 +0200
-@@ -355,7 +355,7 @@
+--- mpi4py.orig/setup.py	2023-10-30 10:19:48.376169834 +0100
++++ mpi4py/setup.py	2023-10-30 10:19:48.368169760 +0100
+@@ -362,7 +362,7 @@
      for var in ('LIBDIR', 'LIBPL'):
          library_dirs += split_quoted(cfg_vars.get(var, ''))
      for var in ('LDFLAGS',

@@ -66,6 +66,17 @@ class MPIPoolExecutor(Executor):
         if self._pool is None:
             self._pool = self._make_pool(self)
 
+    @property
+    def _max_workers(self):
+        with self._lock:
+            if self._broken:
+                return None
+            if self._shutdown:
+                return None
+            self._bootstrap()
+            self._pool.wait()
+            return self._pool.size
+
     def bootup(self, wait=True):
         """Allocate executor resources eagerly.
 
@@ -188,10 +199,12 @@ class MPIPoolExecutor(Executor):
             if cancel_futures:
                 if self._pool is not None:
                     self._pool.cancel()
+            pool = None
             if wait:
-                if self._pool is not None:
-                    self._pool.join()
-                    self._pool = None
+                pool = self._pool
+                self._pool = None
+        if pool is not None:
+            pool.join()
 
 
 def _starmap_helper(submit, function, iterable, timeout, unordered):

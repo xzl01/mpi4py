@@ -1,0 +1,21 @@
+Index: mpi4py/test/test_pack.py
+===================================================================
+--- mpi4py.orig/test/test_pack.py	2021-11-05 21:57:22.250257139 +0100
++++ mpi4py/test/test_pack.py	2022-11-07 17:25:11.804807971 +0100
+@@ -2,7 +2,7 @@
+ import mpiunittest as unittest
+ from arrayimpl import allclose
+ import arrayimpl
+-
++import platform
+ 
+ class BaseTestPack(object):
+ 
+@@ -65,6 +65,7 @@
+                 pack_size = datatype.Pack_external_size(EXT32, count)
+                 real_size = pack_size - overhead
+ 
++    @unittest.skipMPI("openmpi(<=4.1.4)", platform.machine() == 'sparc64')
+     def testPackUnpackExternal(self):
+         for array, typecode1 in arrayimpl.subTest(self):
+             if unittest.is_mpi_gpu('mpich', array): continue

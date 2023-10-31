@@ -8,7 +8,7 @@ cdef inline int cuda_is_contig(tuple shape,
                                Py_ssize_t itemsize,
                                char order) except -1:
     cdef Py_ssize_t i, ndim = len(shape)
-    cdef Py_ssize_t start, step, index
+    cdef Py_ssize_t start, step, index, dim, size = itemsize
     if order == c'F':
         start = 0
         step = 1
@@ -17,39 +17,37 @@ cdef inline int cuda_is_contig(tuple shape,
         step = -1
     for i from 0 <= i < ndim:
         index = start + step * i
-        if itemsize != <Py_ssize_t>strides[index]:
+        dim = <Py_ssize_t>shape[index]
+        if dim > 1 and size != <Py_ssize_t>strides[index]:
             return 0
-        itemsize *= <Py_ssize_t>shape[index]
+        size *= dim
     return 1
 
 cdef inline char* cuda_get_format(char typekind, Py_ssize_t itemsize) nogil:
    if typekind == c'b':
-       if itemsize ==  1: return b"b1"
-       if itemsize ==  2: return b"b2"
-       if itemsize ==  4: return b"b4"
-       if itemsize ==  8: return b"b8"
+       if itemsize == sizeof(char): return b"?"
    if typekind == c'i':
-       if itemsize ==  1: return b"i1"
-       if itemsize ==  2: return b"i2"
-       if itemsize ==  4: return b"i4"
-       if itemsize ==  8: return b"i8"
+       if itemsize == sizeof(char):      return b"b"
+       if itemsize == sizeof(short):     return b"h"
+       if itemsize == sizeof(int):       return b"i"
+       if itemsize == sizeof(long):      return b"l"
+       if itemsize == sizeof(long long): return b"q"
    if typekind == c'u':
-       if itemsize ==  1: return b"u1"
-       if itemsize ==  2: return b"u2"
-       if itemsize ==  4: return b"u4"
-       if itemsize ==  8: return b"u8"
+       if itemsize == sizeof(char):      return b"B"
+       if itemsize == sizeof(short):     return b"H"
+       if itemsize == sizeof(int):       return b"I"
+       if itemsize == sizeof(long):      return b"L"
+       if itemsize == sizeof(long long): return b"Q"
    if typekind == c'f':
-       if itemsize ==  2: return b"f2"
-       if itemsize ==  4: return b"f4"
-       if itemsize ==  8: return b"f8"
-       if itemsize == 12: return b"f12"
-       if itemsize == 16: return b"f16"
+       if itemsize == sizeof(float)//2:    return b"e"
+       if itemsize == sizeof(float):       return b"f"
+       if itemsize == sizeof(double):      return b"d"
+       if itemsize == sizeof(long double): return b"g"
    if typekind == c'c':
-       if itemsize ==  4: return b"c4"
-       if itemsize ==  8: return b"c8"
-       if itemsize == 16: return b"c16"
-       if itemsize == 24: return b"c24"
-       if itemsize == 32: return b"c32"
+       if itemsize == 2*sizeof(float)//2:    return b"Ze"
+       if itemsize == 2*sizeof(float):       return b"Zf"
+       if itemsize == 2*sizeof(double):      return b"Zd"
+       if itemsize == 2*sizeof(long double): return b"Zg"
    return BYTE_FMT
 
 #------------------------------------------------------------------------------

@@ -571,6 +571,26 @@ class BaseTest(object):
         finally:
             comm.Free()
 
+    def testSSendAndMProbe(self):
+        size = self.COMM.Get_size()
+        rank = self.COMM.Get_rank()
+        if size == 1: return
+        comm = self.COMM.Dup()
+        try:
+            for smess in messages:
+                if rank == 0:
+                    comm.ssend(smess, 1)
+                    message = comm.mprobe(1)
+                    rmess = message.recv()
+                    self.assertEqual(rmess, smess)
+                if rank == 1:
+                    message = comm.mprobe(0)
+                    rmess = message.recv()
+                    comm.ssend(rmess, 0)
+                    self.assertEqual(rmess, smess)
+        finally:
+            comm.Free()
+
     def testRequest(self):
         req = self.RequestType()
         self.assertFalse(req)
