@@ -1,4 +1,4 @@
-Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: mpi4py
 Upstream-Contact: Lisandro Dalcin <dalcinl@gmail.com>
 Source: https://bitbucket.org/mpi4py/mpi4py
@@ -9,8 +9,8 @@ License: BSD-2
 
 Files: debian/*
 Copyright: 2010-2012, Yaroslav Halchenko <debian@onerussian.com>
-	   2012 Bradley M. Froehle
-	   2019 Drew Parsons <dparsons@debian.org>
+           2012 Bradley M. Froehle
+           2019 Drew Parsons <dparsons@debian.org>
 License: BSD-2
 
 License: BSD-2

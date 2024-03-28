@@ -1,3 +1,53 @@
+mpi4py (3.1.5-5) unstable; urgency=medium
+
+  * Team upload
+
+  [ Matthias Klose ]
+  * Let the autopkg test depend on setuptools instead of distutils.
+    Closes: #1061813
+
+  [ Andreas Tille ]
+  * Secure URI in copyright format (routine-update)
+  * Remove trailing whitespace in debian/changelog (routine-update)
+  * Do not parse d/changelog (routine-update)
+  * Build-Depends: s/dh-python/dh-sequence-python3/ (routine-update)
+  * Rules-Requires-Root: no (routine-update)
+  * No tab in license text (routine-update)
+  * Use correct machine-readable copyright file URI.
+  * Add missing build-dependency on python3-setuptools.
+  * Add upstream metadata
+  * Remove debian/gbp.conf since it contains only default values from
+    team policy
+
+ -- Andreas Tille <tille@debian.org>  Tue, 20 Feb 2024 11:49:49 +0100
+
+mpi4py (3.1.5-4) unstable; urgency=medium
+
+  * Team upload.
+  * Drop unused Build-Depends: rsh-client.
+
+ -- Bastian Germann <bage@debian.org>  Sun, 14 Jan 2024 20:58:06 +0000
+
+mpi4py (3.1.5-3) unstable; urgency=medium
+
+  * Team upload.
+  * reactivate skip_ppc_failing_tests.patch. ppc* is still failing
+    testCreateF90{Complex,Real}Double with openmpi 4.1.6.
+  * update skip_testPackUnpackExternal_sparc64.patch to skip
+    testPackUnpackExternal on sparc64 for all OpenMPI versions <5.0.
+    Review next time with OpenMPI 5. See Bug#1059791.
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 01 Jan 2024 14:24:22 +0100
+
+mpi4py (3.1.5-2) unstable; urgency=medium
+
+  * Team upload.
+  * Build-Depends: cython3-legacy
+  * disable debian patch skip_ppc_failing_tests.patch to check if
+    testCreateF90{Complex,Real}Double now passes on ppc* (Bug#948655)
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 01 Jan 2024 10:03:27 +0100
+
 mpi4py (3.1.5-1) unstable; urgency=medium
 
   * Team upload.
@@ -391,7 +441,7 @@ mpi4py (3.0.2-1) unstable; urgency=medium
 mpi4py (2.0.0-3) unstable; urgency=medium
 
   * Team Upload
-  
+
   [ Stuart Prescott ]
   * Fix sover list used in dlopen so that current libmpi.so is found
     (Closes: #860476)
@@ -525,7 +575,7 @@ mpi4py (1.2.2-4) unstable; urgency=low
   * up_no_modlibs patch to exclude seems unneeded linking against MODLIBS
     which carry unnecessary -lffi on recent debian systems preventing correct
     build
-  * debian/copyright: adjusted for dep5 and list Bradley 
+  * debian/copyright: adjusted for dep5 and list Bradley
   * Boosted policy to 3.9.3 -- no further changes
 
  -- Yaroslav Halchenko <debian@onerussian.com>  Tue, 22 May 2012 13:24:18 -0400

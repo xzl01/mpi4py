@@ -6,7 +6,7 @@ Test-Command: OMPI_MCA_rmaps_base_oversubscribe=yes mpiexec -n 5 python3 test/ru
 Depends: python3-mpi4py,
     python3-cffi,
     python3-dill,
-    python3-distutils,
+    python3-setuptools,
     python3-numpy,
     python3-simplejson,
     python3-yaml
