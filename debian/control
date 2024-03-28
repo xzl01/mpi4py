@@ -5,14 +5,15 @@ Uploaders: Yaroslav Halchenko <debian@onerussian.com>,
 Section: python
 Priority: optional
 Build-Depends: debhelper-compat (= 13),
-               dh-python,
+               dh-sequence-python3,
                mpi-default-dev,
                mpi-default-bin,
-               rsh-client | openssh-client,
-               cython3,
+               openssh-client,
+               cython3-legacy,
                python3-all-dev,
                python3-numpy,
-               python3-sphinx
+               python3-sphinx,
+               python3-setuptools
 Build-Depends-Indep: texinfo, texlive,
  latexmk, tex-gyre,
  texlive-latex-extra
@@ -20,6 +21,7 @@ Standards-Version: 4.6.2
 Vcs-Browser: https://salsa.debian.org/science-team/mpi4py
 Vcs-Git: https://salsa.debian.org/science-team/mpi4py.git
 Homepage: https://github.com/mpi4py/mpi4py
+Rules-Requires-Root: no
 
 Package: python3-mpi4py
 Architecture: any
