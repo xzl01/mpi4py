@@ -21,22 +21,8 @@ export OMPI_MCA_btl_vader_single_copy_mechanism=none
 export  http_proxy=http://127.0.0.1:9/
 export  https_proxy=http://127.0.0.1:9/
 
-
-# disable build tests for these arches:
-# x32 consistently times out on tests
-NO_TEST_ARCH_LIST = x32
-
-empty :=
-space := $(empty)$(empty)
-
-# run tests, or not
-RUNTEST=yes
-ifneq (,$(findstring $(space)$(DEB_HOST_ARCH)$(space), $(space)$(NO_TEST_ARCH_LIST)$(space)))
-  RUNTEST=no
-endif
-ifneq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
-  RUNTEST=no
-endif
+# disable tests by default as network connection is not available
+RUNTEST=no
 
 # hurd fails a couple of tests
 # but hell, hurd needs all the help it can get, so let it pass

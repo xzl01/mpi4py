@@ -1,3 +1,9 @@
+mpi4py (3.1.5-5deepin1) UNRELEASED; urgency=medium
+
+  * Disable test as there is no network during build process
+
+ -- zhoushicheng <zhoushicheng@uniontech.com>  Mon, 02 Dec 2024 15:07:04 +0800
+
 mpi4py (3.1.5-5) unstable; urgency=medium
 
   * Team upload
