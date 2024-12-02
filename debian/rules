@@ -18,22 +18,8 @@ export PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
 export  http_proxy=http://127.0.0.1:9/
 export  https_proxy=http://127.0.0.1:9/
 
-
-# disable build tests for these arches:
-# x32 consistently times out on tests
-NO_TEST_ARCH_LIST = x32
-
-empty :=
-space := $(empty)$(empty)
-
-# run tests, or not
-RUNTEST=yes
-ifneq (,$(findstring $(space)$(DEB_HOST_ARCH)$(space), $(space)$(NO_TEST_ARCH_LIST)$(space)))
-  RUNTEST=no
-endif
-ifneq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
-  RUNTEST=no
-endif
+# disable tests by default as network connection is not available
+RUNTEST=no
 
 ifeq ($(DEB_HOST_ARCH),mips64el)
 # mips64el times out. Run tests on default python only.

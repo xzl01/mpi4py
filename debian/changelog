@@ -1,3 +1,9 @@
+mpi4py (4.0.1-6deepin1) unstable; urgency=medium
+
+  * Disable test as there is no network during build process
+
+ -- zhoushicheng <zhoushicheng@uniontech.com>  Mon, 02 Dec 2024 15:07:04 +0800
+
 mpi4py (4.0.1-6) unstable; urgency=medium
 
   * mips64el is in trouble. Reinstate version restriction. Test
@@ -241,6 +247,7 @@ mpi4py (3.1.5-6) unstable; urgency=medium
   * add Drew Parsons as uploader
 
  -- Drew Parsons <dparsons@debian.org>  Mon, 06 May 2024 19:33:49 +0200
+
 
 mpi4py (3.1.5-5) unstable; urgency=medium
 
