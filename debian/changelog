@@ -1,5 +1,4 @@
-
-mpi4py (4.0.1-6deepin1) UNRELEASED; urgency=medium
+mpi4py (4.0.1-6deepin1) unstable; urgency=medium
 
   * Disable test as there is no network during build process
 
