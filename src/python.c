@@ -9,7 +9,10 @@
 #define OMPI_IGNORE_CXX_SEEK 1
 #include <mpi.h>
 
-#if PY_MAJOR_VERSION <= 2
+#if defined(PYPY_VERSION)
+PyAPI_FUNC(int) pypy_main_startup(int, char **);
+#define Py_BytesMain pypy_main_startup
+#elif PY_MAJOR_VERSION <= 2
 #define Py_BytesMain Py_Main
 #elif PY_VERSION_HEX < 0x03070000
 static int Py_BytesMain(int, char **);
@@ -25,7 +28,7 @@ main(int argc, char **argv)
 {
   int status = 0, flag = 1, finalize = 0;
 
-  /* MPI initalization */
+  /* MPI initialization */
   (void)MPI_Initialized(&flag);
   if (!flag) {
 #if defined(MPI_VERSION) && (MPI_VERSION > 1)
@@ -55,8 +58,11 @@ main(int argc, char **argv)
 
 /* -------------------------------------------------------------------------- */
 
+#if !defined(PYPY_VERSION)
 #if PY_MAJOR_VERSION >= 3 && PY_VERSION_HEX < 0x03070000
 
+#include <stdlib.h>
+#include <string.h>
 #include <locale.h>
 
 static wchar_t **mk_wargs(int, char **);
@@ -142,7 +148,8 @@ rm_wargs(wchar_t **args, int deep)
     free(args);
 }
 
-#endif /* !(PY_MAJOR_VERSION >= 3) */
+#endif
+#endif
 
 /* -------------------------------------------------------------------------- */
 

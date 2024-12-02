@@ -1,29 +1,18 @@
-.PHONY: default
+include ../config.mk
+.PHONY: default build test clean
 default: build test clean
 
-PYTHON = python$(py)
-PYTHON_CONFIG = ${PYTHON} ../python-config
-MPI4PY_INCLUDE = ${shell ${PYTHON} -c 'import mpi4py; print( mpi4py.get_include() )'}
+MODULE = helloworld
+SOURCE = $(MODULE).c
+TARGET = $(MODULE)$(EXT_SUFFIX)
 
+$(TARGET): $(SOURCE)
+	$(MPICC) $(MPI4PY_INCLUDE) $(CC_FLAGS_SHARED) -o $@ $<
 
-MPICC = mpicc
-CFLAGS = -fPIC ${shell ${PYTHON_CONFIG} --includes}
-LDFLAGS = -shared ${shell ${PYTHON_CONFIG} --libs}
-SO = ${shell ${PYTHON_CONFIG} --extension-suffix}
-.PHONY: build
-build: helloworld${SO}
-helloworld${SO}: helloworld.c
-	${MPICC} ${CFLAGS} -I${MPI4PY_INCLUDE} -o $@ $< ${LDFLAGS}
+build: $(TARGET)
 
-
-MPIEXEC = mpiexec
-NP_FLAG = -n
-NP = 5
-.PHONY: test
 test: build
-	${MPIEXEC} ${NP_FLAG} ${NP} ${PYTHON} test.py
+	$(MPIEXEC_PYTHON) test.py
 
-
-.PHONY: clean
 clean:
-	${RM} helloworld${SO}
+	$(RM) -r $(TARGET) __pycache__

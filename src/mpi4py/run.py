@@ -23,11 +23,10 @@ def run_command_line(args=None):
 
     def run_string(string, init_globals=None, run_name=None,
                    filename='<string>', argv0='-c'):
-        # pylint: disable=missing-docstring
         from runpy import _run_module_code
-        karg = 'script_name' if sys.version_info >= (3, 4) else 'mod_fname'
-        code = compile(string, filename, 'exec', 0, 1)
-        return _run_module_code(code, init_globals, run_name, **{karg: argv0})
+        code = compile(string, filename, 'exec', 0, True)
+        kwargs = {'script_name': argv0}
+        return _run_module_code(code, init_globals, run_name, **kwargs)
 
     sys.argv[:] = args if args is not None else sys.argv[1:]
 
@@ -57,34 +56,36 @@ def set_abort_status(status):
     """
     # pylint: disable=import-outside-toplevel
     import sys
-    status = (status if isinstance(status, int)
-              else 0 if status is None else 1)
-    pkg = __spec__.parent or __name__.rpartition('.')[0]
-    mpi = sys.modules.get(pkg + '.MPI')
+    if isinstance(status, SystemExit):
+        status = status.code
+    elif isinstance(status, KeyboardInterrupt):
+        from _signal import SIGINT
+        status = SIGINT + 128
+    if not isinstance(status, int):
+        status = 0 if status is None else 1
+    pkg = __spec__.parent
+    mpi = sys.modules.get(f'{pkg}.MPI')
     if mpi is not None and status:
         # pylint: disable=protected-access
         mpi._set_abort_status(status)
-    return sys.exc_info()
 
 
 def main():
     """Entry-point for ``python -m mpi4py.run ...``."""
-    # pylint: disable=missing-docstring
     # pylint: disable=too-many-statements
     # pylint: disable=import-outside-toplevel
     import os
     import sys
 
-    package = __spec__.parent
-
     def prefix():
-        prefix = os.path.dirname(__file__)
+        prefix = os.path.dirname(__spec__.origin)
         print(prefix, file=sys.stdout)
         sys.exit(0)
 
     def version():
         from . import __version__
-        print(package, __version__, file=sys.stdout)
+        package = __spec__.parent
+        print(f"{package} {__version__}", file=sys.stdout)
         sys.exit(0)
 
     def mpi_std_version():
@@ -92,9 +93,9 @@ def main():
         rc.initialize = rc.finalize = False
         from . import MPI
         version = ".".join(map(str, (MPI.VERSION, MPI.SUBVERSION)))
-        rtver = ".".join(map(str, MPI.Get_version()))
-        note = " (runtime: MPI {0})".format(rtver) if rtver != version else ""
-        print("MPI {0}{1}".format(version, note), file=sys.stdout)
+        rtversion = ".".join(map(str, MPI.Get_version()))
+        note = f" (runtime: MPI {rtversion})" if rtversion != version else ""
+        print(f"MPI {version}{note}", file=sys.stdout)
         sys.exit(0)
 
     def mpi_lib_version():
@@ -107,23 +108,19 @@ def main():
 
     def usage(errmess=None):
         from textwrap import dedent
-        if __name__ == '__main__':
-            prog_name = package + '.run'
-        else:
-            prog_name = package
-        python_exe = os.path.basename(sys.executable)
-        subs = dict(prog=prog_name, python=python_exe)
+        python = os.path.basename(sys.executable)
+        program = __spec__.name
 
-        cmdline = dedent("""
-        usage: {python} -m {prog} [options] <pyfile> [arg] ...
-           or: {python} -m {prog} [options] -m <mod> [arg] ...
-           or: {python} -m {prog} [options] -c <cmd> [arg] ...
-           or: {python} -m {prog} [options] - [arg] ...
-        """).strip().format(**subs)
+        cmdline = dedent(f"""
+        usage: {python} -m {program} [options] <pyfile> [arg] ...
+           or: {python} -m {program} [options] -m <mod> [arg] ...
+           or: {python} -m {program} [options] -c <cmd> [arg] ...
+           or: {python} -m {program} [options] - [arg] ...
+        """).strip()
 
-        helptip = dedent("""
-        Try `{python} -m {prog} -h` for more information.
-        """).strip().format(**subs)
+        helptip = dedent(f"""
+        Try `{python} -m {program} -h` for more information.
+        """).strip()
 
         options = dedent("""
         options:
@@ -133,9 +130,6 @@ def main():
           --mpi-lib-version    show MPI library version and exit
           -h|--help            show this help message and exit
           -rc <key=value,...>  set 'mpi4py.rc.key=value'
-          -p|--profile <pmpi>  use <pmpi> for profiling
-          --mpe                profile with MPE
-          --vt                 profile with VampirTrace
         """).strip()
 
         if errmess:
@@ -153,8 +147,8 @@ def main():
 
         class Options:
             # pylint: disable=too-few-public-methods
+            # pylint: disable=missing-class-docstring
             rc_args = {}
-            profile = None
 
         def poparg(args):
             if len(args) < 2 or args[1].startswith('-'):
@@ -164,51 +158,44 @@ def main():
         options = Options()
         args = sys.argv[1:] if args is None else args[:]
         while args and args[0].startswith('-'):
-            if args[0] in ('-m', '-c', '-'):
+            arg0 = args[0]
+            if arg0 in ('-m', '-c', '-'):
                 break  # Stop processing options
-            if args[0] in ('-h', '-help', '--help'):
+            if arg0 in ('-h', '-help', '--help'):
                 usage()  # Print help and exit
-            if args[0] in ('-prefix', '--prefix'):
+            if arg0 in ('-prefix', '--prefix'):
                 prefix()  # Print install path and exit
-            if args[0] in ('-version', '--version'):
+            if arg0 in ('-version', '--version'):
                 version()  # Print version number and exit
-            if args[0] in ('-mpi-std-version', '--mpi-std-version'):
+            if arg0 in ('-mpi-std-version', '--mpi-std-version'):
                 mpi_std_version()  # Print MPI standard version and exit
-            if args[0] in ('-mpi-lib-version', '--mpi-lib-version'):
+            if arg0 in ('-mpi-lib-version', '--mpi-lib-version'):
                 mpi_lib_version()  # Print MPI library version and exit
-            try:
-                arg0 = args[0]
-                if arg0.startswith('--'):
-                    if '=' in arg0:
-                        opt, _, arg = arg0[1:].partition('=')
-                        if opt in ('-rc', '-profile'):
-                            arg0, args[1:1] = opt, [arg]
-                    else:
-                        arg0 = arg0[1:]
-                if arg0 == '-rc':
-                    for entry in poparg(args).split(','):
-                        key, _, val = entry.partition('=')
-                        if not key or not val:
-                            raise ValueError(entry)
-                        try:
-                            # pylint: disable=eval-used
-                            options.rc_args[key] = eval(val, {})
-                        except NameError:
-                            options.rc_args[key] = val
-                elif arg0 in ('-p', '-profile'):
-                    options.profile = poparg(args) or None
-                elif arg0 in ('-mpe', '-vt'):
-                    options.profile = arg0[1:]
+            if arg0.startswith('--'):
+                if '=' in arg0:
+                    opt, _, arg = arg0[1:].partition('=')
+                    if opt in ('-rc',):
+                        arg0, args[1:1] = opt, [arg]
                 else:
-                    usage('Unknown option: ' + args[0])
-                del args[0]
-            except Exception:  # pylint: disable=broad-except
-                # Bad option, print usage and exit with error
-                usage('Cannot parse option: ' + args[0])
+                    arg0 = arg0[1:]
+            if arg0 == '-rc':
+                from ast import literal_eval
+                for entry in poparg(args).split(','):
+                    key, _, val = entry.partition('=')
+                    if not key or not val:
+                        usage('Cannot parse rc option: ' + entry)
+                    try:
+                        val = literal_eval(val)
+                    except ValueError:
+                        pass
+                    options.rc_args[key] = val
+            else:
+                usage('Unknown option: ' + args[0])
+            del args[0]
         # Check remaining args and return to caller
         if not args:
             usage("No path specified for execution")
-        elif args[0] in ('-m', '-c') and len(args) < 2:
+        if args[0] in ('-m', '-c') and len(args) < 2:
             usage("Argument expected for option: " + args[0])
         return options, args
 
@@ -216,9 +203,6 @@ def main():
         if options.rc_args:  # Set mpi4py.rc parameters
             from . import rc
             rc(**options.rc_args)
-        if options.profile:  # Load profiling library
-            from . import profile
-            profile(options.profile)
 
     # Parse and process command line options
     options, args = parse_command_line()
@@ -229,9 +213,12 @@ def main():
     try:
         run_command_line(args)
     except SystemExit as exc:
-        set_abort_status(exc.code)
+        set_abort_status(exc)
         raise
-    except:
+    except KeyboardInterrupt as exc:
+        set_abort_status(exc)
+        raise
+    except BaseException:
         set_abort_status(1)
         raise
 

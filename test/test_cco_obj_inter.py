@@ -5,26 +5,28 @@ from functools import reduce
 cumsum  = lambda seq: reduce(lambda x, y: x+y, seq, 0)
 cumprod = lambda seq: reduce(lambda x, y: x*y, seq, 1)
 
-_basic = [None,
-          True, False,
-          -7, 0, 7, 2**31,
-          -2**63+1, 2**63-1,
-          -2.17, 0.0, 3.14,
-          1+2j, 2-3j,
-          'mpi4py',
-          ]
-messages = _basic
-messages += [ list(_basic),
-              tuple(_basic),
-              dict([('k%d' % key, val)
-                    for key, val in enumerate(_basic)])
-              ]
+_basic = [
+    None,
+    True, False,
+    -7, 0, 7, 2**31,
+    -2**63+1, 2**63-1,
+    -2.17, 0.0, 3.14,
+    1+2j, 2-3j,
+    'mpi4py',
+]
+messages = list(_basic)
+messages += [
+    list(_basic),
+    tuple(_basic),
+    {f'k{k}': v for k, v in enumerate(_basic)},
+]
 
 @unittest.skipMPI('openmpi(<1.6.0)')
+@unittest.skipMPI('msmpi', MPI.COMM_WORLD.Get_size() >= 3)
 @unittest.skipMPI('MPICH1')
 @unittest.skipIf(MPI.ROOT == MPI.PROC_NULL, 'mpi-root')
 @unittest.skipIf(MPI.COMM_WORLD.Get_size() < 2, 'mpi-world-size<2')
-class BaseTestCCOObjInter(object):
+class BaseTestCCOObjInter:
 
     BASECOMM  = MPI.COMM_NULL
     INTRACOMM = MPI.COMM_NULL
@@ -33,7 +35,7 @@ class BaseTestCCOObjInter(object):
     def setUp(self):
         size = self.BASECOMM.Get_size()
         rank = self.BASECOMM.Get_rank()
-        if rank < size // 2 :
+        if rank < size // 2:
             self.COLOR = 0
             self.LOCAL_LEADER = 0
             self.REMOTE_LEADER = size // 2
@@ -54,7 +56,7 @@ class BaseTestCCOObjInter(object):
 
     @unittest.skipMPI('MPICH2(<1.0.8)')
     def testBarrier(self):
-        self.INTERCOMM.Barrier()
+        self.INTERCOMM.barrier()
 
     def testBcast(self):
         rank = self.INTERCOMM.Get_rank()
@@ -68,7 +70,7 @@ class BaseTestCCOObjInter(object):
                             rmess = self.INTERCOMM.bcast(smess, root=MPI.ROOT)
                         else:
                             rmess = self.INTERCOMM.bcast(None, root=MPI.PROC_NULL)
-                        self.assertEqual(rmess, None)
+                        self.assertIsNone(rmess)
                 else:
                     for root in range(rsize):
                         rmess = self.INTERCOMM.bcast(None, root=root)
@@ -87,11 +89,11 @@ class BaseTestCCOObjInter(object):
                             self.assertEqual(rmess, [smess] * rsize)
                         else:
                             rmess = self.INTERCOMM.gather(None, root=MPI.PROC_NULL)
-                            self.assertEqual(rmess, None)
+                            self.assertIsNone(rmess)
                 else:
                     for root in range(rsize):
                         rmess = self.INTERCOMM.gather(smess, root=root)
-                        self.assertEqual(rmess, None)
+                        self.assertIsNone(rmess)
 
     @unittest.skipMPI('msmpi(<8.0.0)')
     def testScatter(self):
@@ -106,7 +108,7 @@ class BaseTestCCOObjInter(object):
                             rmess = self.INTERCOMM.scatter([smess] * rsize, root=MPI.ROOT)
                         else:
                             rmess = self.INTERCOMM.scatter(None, root=MPI.PROC_NULL)
-                        self.assertEqual(rmess, None)
+                        self.assertIsNone(rmess)
                 else:
                     for root in range(rsize):
                         rmess = self.INTERCOMM.scatter(None, root=root)
@@ -149,11 +151,17 @@ class BaseTestCCOObjInter(object):
                                 self.assertEqual(value, 0)
                         else:
                             value = self.INTERCOMM.reduce(None, op=op, root=MPI.PROC_NULL)
-                            self.assertEqual(value, None)
+                            self.assertIsNone(value)
                 else:
                     for root in range(rsize):
                         value = self.INTERCOMM.reduce(rank, op=op, root=root)
-                        self.assertEqual(value, None)
+                        self.assertIsNone(value)
+        badroots = {-3, -2, -1, rsize}.difference({MPI.ROOT, MPI.PROC_NULL})
+        for root in badroots:
+            with self.assertRaises(MPI.Exception) as cm:
+                self.INTERCOMM.reduce(None, op=MPI.NO_OP, root=root)
+            ierr = cm.exception.Get_error_class()
+            self.assertEqual(ierr, MPI.ERR_ROOT)
 
     @unittest.skipMPI('MPICH2(<1.0.8)')
     def testAllreduce(self):
@@ -178,20 +186,20 @@ class TestCCOObjInter(BaseTestCCOObjInter, unittest.TestCase):
 class TestCCOObjInterDup(TestCCOObjInter):
     def setUp(self):
         self.BASECOMM = self.BASECOMM.Dup()
-        super(TestCCOObjInterDup, self).setUp()
+        super().setUp()
     def tearDown(self):
         self.BASECOMM.Free()
-        super(TestCCOObjInterDup, self).tearDown()
+        super().tearDown()
 
 class TestCCOObjInterDupDup(TestCCOObjInterDup):
     BASECOMM = MPI.COMM_WORLD
     INTERCOMM_ORIG = MPI.COMM_NULL
     def setUp(self):
-        super(TestCCOObjInterDupDup, self).setUp()
+        super().setUp()
         self.INTERCOMM_ORIG = self.INTERCOMM
         self.INTERCOMM = self.INTERCOMM.Dup()
     def tearDown(self):
-        super(TestCCOObjInterDupDup, self).tearDown()
+        super().tearDown()
         self.INTERCOMM_ORIG.Free()
 
 

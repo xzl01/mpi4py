@@ -11,12 +11,11 @@ from .. import MPI
 try:
     from numpy import dtype as _np_dtype
 except ImportError:  # pragma: no cover
-    pass
+    _np_dtype = None
 
 
 def _get_datatype(dtype):
-    # pylint: disable=protected-access
-    return MPI._typedict.get(dtype.char)
+    return MPI.Datatype.fromcode(dtype.char)
 
 
 def _get_typecode(datatype):
@@ -24,66 +23,17 @@ def _get_typecode(datatype):
     return MPI._typecode(datatype)
 
 
-def _get_alignment_ctypes(typecode):
-    # pylint: disable=protected-access
-    # pylint: disable=import-outside-toplevel
-    import ctypes as ct
-    if typecode in ('p', 'n', 'P', 'N'):
-        kind = 'i' if typecode in ('p', 'n') else 'u'
-        size = ct.sizeof(ct.c_void_p)
-        typecode = '{}{:d}'.format(kind, size)
-    if typecode in ('F', 'D', 'G'):
-        typecode = typecode.lower()
-    if len(typecode) > 1:
-        mapping = {
-            'b': (ct.c_bool,),
-            'i': (ct.c_int8, ct.c_int16, ct.c_int32, ct.c_int64),
-            'u': (ct.c_uint8, ct.c_uint16, ct.c_uint32, ct.c_uint64),
-            'f': (ct.c_float, ct.c_double, ct.c_longdouble),
-        }
-        kind, size = typecode[0], int(typecode[1:])
-        if kind == 'c':
-            kind, size = 'f', size // 2
-        for c_type in mapping[kind]:
-            if ct.sizeof(c_type) == size:
-                typecode = c_type._type_
-    c_type_base = ct._SimpleCData
-    c_type = type('c_type', (c_type_base,), dict(_type_=typecode))
-    fields = [('base', ct.c_char), ('c_type', c_type)]
-    struct = type('S', (ct.Structure,), dict(_fields_=fields))
-    return struct.c_type.offset  # pylint: disable=no-member
-
-
 def _get_alignment(datatype):
-    typecode = _get_typecode(datatype)
-    if typecode is None:
-        combiner = datatype.combiner
-        combiner_f90 = (
-            MPI.COMBINER_F90_INTEGER,
-            MPI.COMBINER_F90_REAL,
-            MPI.COMBINER_F90_COMPLEX,
-        )
-        if combiner in combiner_f90:
-            typesize = datatype.Get_size()
-            typekind = 'ifc'[combiner_f90.index(combiner)]
-            typecode = '{0}{1:d}'.format(typekind, typesize)
-    if typecode is None:
-        # pylint: disable=import-outside-toplevel
-        from struct import calcsize
-        alignment = datatype.Get_size()
-        return min(max(1, alignment), calcsize('P'))
-    try:
-        return _np_dtype(typecode).alignment
-    except NameError:  # pragma: no cover
-        return _get_alignment_ctypes(typecode)
+    # pylint: disable=protected-access
+    return MPI._typealign(datatype)
 
 
 def _is_aligned(datatype, offset=0):
-    """Dermine whether an MPI datatype is aligned."""
+    """Determine whether an MPI datatype is aligned."""
     if datatype.is_predefined:
         if offset == 0:
             return True
-        alignment = _get_alignment(datatype)
+        alignment = _get_alignment(datatype) or 0
         return offset % alignment == 0
 
     combiner = datatype.combiner
@@ -113,11 +63,9 @@ def _is_aligned(datatype, offset=0):
 
 def from_numpy_dtype(dtype):
     """Convert NumPy datatype to MPI datatype."""
-    try:
-        dtype = _np_dtype(dtype)
-    except NameError:  # pragma: no cover
-        # pylint: disable=raise-missing-from
-        raise RuntimeError("NumPy is not available")
+    if _np_dtype is None:
+        raise RuntimeError("NumPy is not available") from None
+    dtype = _np_dtype(dtype)
 
     if dtype.hasobject:
         raise ValueError("NumPy datatype with object entries")
@@ -131,8 +79,8 @@ def from_numpy_dtype(dtype):
         displacements = []
         datatypes = []
         try:
-            for name in dtype.names:
-                ftype, fdisp = fields[name]
+            for name in dtype.names or ():
+                ftype, fdisp, *_ = fields[name]
                 blocklengths.append(1)
                 displacements.append(fdisp)
                 datatypes.append(from_numpy_dtype(ftype))
@@ -162,8 +110,6 @@ def from_numpy_dtype(dtype):
 
     # elementary data type
     datatype = _get_datatype(dtype)
-    if datatype is None:
-        raise ValueError("cannot convert NumPy datatype to MPI")
     return datatype.Dup()
 
 
@@ -174,23 +120,28 @@ def to_numpy_dtype(datatype):
         dtype = to_numpy_dtype(datatype)
         return dtype if count == 1 else (dtype, count)
 
-    def np_dtype(spec):
-        try:
-            return _np_dtype(spec)
-        except NameError:  # pragma: no cover
-            return spec
+    def np_dtype(spec, **kwargs):
+        if _np_dtype is None:
+            return spec if not kwargs else (spec, kwargs)
+        return _np_dtype(spec, **kwargs)
 
     if datatype == MPI.DATATYPE_NULL:
         raise ValueError("cannot convert null MPI datatype to NumPy")
 
     combiner = datatype.combiner
 
-    # predefined datatype
+    # named elementary datatype
     if combiner == MPI.COMBINER_NAMED:
+        # elementary datatype
         typecode = _get_typecode(datatype)
         if typecode is not None:
             return np_dtype(typecode)
-        raise ValueError("cannot convert MPI datatype to NumPy")
+        # pair datatype for MINLOC/MAXLOC reductions
+        names = ('SHORT', 'INT', 'LONG', 'FLOAT', 'DOUBLE', 'LONG_DOUBLE')
+        types = [getattr(MPI, f'{name}_INT') for name in names]
+        typename = names[types.index(datatype)]
+        typecode = _get_typecode(getattr(MPI, typename))
+        return np_dtype(f'{typecode},i', align=True)
 
     # user-defined datatype
     basetype, _, info = datatype.decode()
@@ -213,11 +164,24 @@ def to_numpy_dtype(datatype):
             subsizes = info['subsizes']
             starts = info['starts']
             order = info['order']
-            assert subsizes == sizes
-            assert min(starts) == max(starts) == 0
-            if order == MPI.ORDER_FORTRAN:
-                sizes = sizes[::-1]
-            return np_dtype((dtype, tuple(sizes)))
+            if subsizes == sizes and min(starts) == max(starts) == 0:
+                if order == MPI.ORDER_FORTRAN:
+                    sizes = sizes[::-1]
+                return np_dtype((dtype, tuple(sizes)))
+            raise ValueError("cannot convert subarray MPI datatype to NumPy")
+
+        # value-index datatype
+        if combiner == MPI.COMBINER_VALUE_INDEX:  # pragma: no cover
+            value = to_numpy_dtype(info['value'])
+            index = to_numpy_dtype(info['index'])
+            datatypes = [value, index]
+            return np_dtype(
+                [
+                    ('f0', value),
+                    ('f1', index),
+                ],
+                align=True,
+            )
 
         # struct datatype
         aligned = True
@@ -231,7 +195,7 @@ def to_numpy_dtype(datatype):
             datatypes = info['datatypes']
             blocklengths = info['blocklengths']
             displacements = info['displacements']
-            names = list(map('f{}'.format, range(len(datatypes))))
+            names = [f'f{i}' for i in range(len(datatypes))]
             formats = list(map(mpi2npy, datatypes, blocklengths))
             offsets = displacements
             itemsize = datatype.extent
@@ -262,7 +226,7 @@ def to_numpy_dtype(datatype):
             if combiner == MPI.COMBINER_HVECTOR:
                 stride = stride if count > 1 else 0
                 aligned = _is_aligned(basetype, stride)
-            names = list(map('f{0}'.format, range(count)))
+            names = [f'f{i}' for i in range(count)]
             formats = [(dtype, (blocklength,))] * count
             offsets = [stride * i for i in range(count)]
             itemsize = datatype.extent
@@ -287,6 +251,7 @@ def to_numpy_dtype(datatype):
             dtype = to_numpy_dtype(basetype)
             stride = 1
             aligned = _is_aligned(basetype)
+            blocklengths = []
             displacements = info['displacements']
             if combiner in combiner_indexed[:2]:
                 blocklengths = info['blocklengths']
@@ -296,7 +261,7 @@ def to_numpy_dtype(datatype):
                 stride = basetype.extent
             if combiner in combiner_indexed[1::2]:
                 aligned &= all(_is_aligned(basetype, d) for d in displacements)
-            names = list(map('f{}'.format, range(len(displacements))))
+            names = [f'f{i}' for i in range(len(displacements))]
             formats = [(dtype, (blen,)) for blen in blocklengths]
             offsets = [disp * stride for disp in displacements]
             return np_dtype(
@@ -316,9 +281,8 @@ def to_numpy_dtype(datatype):
         )
         if combiner in combiner_f90:
             datatypes.pop()
-            typesize = datatype.Get_size()
-            typecode = 'ifc'[combiner_f90.index(combiner)]
-            return np_dtype('{0}{1:d}'.format(typecode, typesize))
+            typecode = _get_typecode(datatype)
+            return np_dtype(typecode)
 
         raise ValueError("cannot convert MPI datatype to NumPy")
     finally:

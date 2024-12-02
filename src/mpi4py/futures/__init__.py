@@ -3,7 +3,7 @@
 """Execute computations asynchronously using MPI processes."""
 # pylint: disable=redefined-builtin
 
-from ._core import (
+from ._base import (
     Future,
     Executor,
     wait,
@@ -16,9 +16,35 @@ from ._core import (
     InvalidStateError,
     BrokenExecutor,
 )
+from .pool import (
+    MPIPoolExecutor,
+    MPICommExecutor,
+    ThreadPoolExecutor,
+    ProcessPoolExecutor,
+    get_comm_workers,
+)
+from .util import (
+    collect,
+    compose,
+)
 
-from .pool import MPIPoolExecutor
-from .pool import MPICommExecutor
-
-from .pool import ThreadPoolExecutor
-from .pool import ProcessPoolExecutor
+__all__ = [
+    'Future',
+    'Executor',
+    'wait',
+    'FIRST_COMPLETED',
+    'FIRST_EXCEPTION',
+    'ALL_COMPLETED',
+    'as_completed',
+    'CancelledError',
+    'TimeoutError',
+    'InvalidStateError',
+    'BrokenExecutor',
+    'MPIPoolExecutor',
+    'MPICommExecutor',
+    'ThreadPoolExecutor',
+    'ProcessPoolExecutor',
+    'get_comm_workers',
+    'collect',
+    'compose',
+]

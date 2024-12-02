@@ -1,6 +1,13 @@
 from mpi4py import MPI
 from mpi4py.util import pkl5
-import unittest
+import sys, os
+try:
+    import mpiunittest as unittest
+except ImportError:
+    sys.path.append(
+        os.path.dirname(
+            os.path.abspath(__file__)))
+    import mpiunittest as unittest
 
 _basic = [
     None,
@@ -17,7 +24,7 @@ messages += [
     tuple(_basic),
     set(_basic),
     frozenset(_basic),
-    dict(('k%d' % k, v) for k, v in enumerate(_basic)),
+    {f'k{k}': v for k, v in enumerate(_basic)},
 ]
 
 try:
@@ -33,7 +40,7 @@ except ImportError:
     numpy = None
 
 
-class BaseTest(object):
+class BaseTest:
 
     COMM = MPI.COMM_NULL
     CommType = MPI.Intracomm
@@ -55,7 +62,7 @@ class BaseTest(object):
         for smess in messages:
             self.COMM.send(smess, MPI.PROC_NULL)
             rmess = self.COMM.recv(None, MPI.PROC_NULL, 0)
-            self.assertEqual(rmess, None)
+            self.assertIsNone(rmess)
         if size == 1: return
         for smess in messages:
             if rank == 0:
@@ -78,7 +85,7 @@ class BaseTest(object):
             req.wait()
             self.assertFalse(req)
             rmess = self.COMM.recv(buf, MPI.PROC_NULL, 0)
-            self.assertEqual(rmess, None)
+            self.assertIsNone(rmess)
         for smess in messages:
             req = self.COMM.isend(smess, rank, 0)
             self.assertTrue(req)
@@ -104,7 +111,7 @@ class BaseTest(object):
         for smess in messages:
             self.COMM.ssend(smess, MPI.PROC_NULL)
             rmess = self.COMM.recv(None, MPI.PROC_NULL, 0)
-            self.assertEqual(rmess, None)
+            self.assertIsNone(rmess)
         if size == 1: return
         for smess in messages:
             if rank == 0:
@@ -126,7 +133,7 @@ class BaseTest(object):
             req.wait()
             self.assertFalse(req)
             rmess = self.COMM.recv(None, MPI.PROC_NULL, 0)
-            self.assertEqual(rmess, None)
+            self.assertIsNone(rmess)
         for smess in messages:
             req = self.COMM.issend(smess, rank, 0)
             self.assertTrue(req)
@@ -157,7 +164,7 @@ class BaseTest(object):
             for smess in messages:
                 self.COMM.bsend(smess, MPI.PROC_NULL)
                 rmess = self.COMM.recv(None, MPI.PROC_NULL, 0)
-                self.assertEqual(rmess, None)
+                self.assertIsNone(rmess)
             if size == 1: return
             for smess in messages:
                 if rank == 0:
@@ -186,7 +193,7 @@ class BaseTest(object):
                 req.wait()
                 self.assertFalse(req)
                 rmess = self.COMM.recv(None, MPI.PROC_NULL, 0)
-                self.assertEqual(rmess, None)
+                self.assertIsNone(rmess)
             for smess in messages:
                 req = self.COMM.ibsend(smess, rank, 0)
                 self.assertTrue(req)
@@ -220,8 +227,6 @@ class BaseTest(object):
             self.assertTrue(req)
             req.cancel()
             self.assertTrue(req)
-            self.assertTrue (req != MPI.REQUEST_NULL)
-            self.assertFalse(req == MPI.REQUEST_NULL)
             status = MPI.Status()
             req.get_status(status)
             if not status.Is_cancelled():
@@ -233,8 +238,35 @@ class BaseTest(object):
             else:
                 req.Free()
             self.assertFalse(req)
-            self.assertTrue (req == MPI.REQUEST_NULL)
-            self.assertFalse(req != MPI.REQUEST_NULL)
+
+    def testGetStatusAll(self):
+        comm = self.COMM
+        size = comm.Get_size()
+        rank = comm.Get_rank()
+        requests = []
+        for smess in messages:
+            req = comm.issend(smess, rank)
+            requests.append(req)
+        with self.catchNotImplementedError(4, 1):
+            flag = self.RequestType.get_status_all(requests)
+            self.assertFalse(flag)
+        comm.barrier()
+        for smess in messages:
+            rmess = comm.recv(None, rank)
+            self.assertEqual(rmess, smess)
+        with self.catchNotImplementedError(4, 1):
+            flag = False
+            statuses = []
+            while not flag:
+                flag = self.RequestType.get_status_all(requests, statuses)
+            self.assertEqual(len(statuses), len(requests))
+            for status in statuses:
+                self.assertIsInstance(status, MPI.Status)
+        if not flag:
+            self.RequestType.waitall(requests)
+        flag, obj = self.RequestType.testall(requests)
+        self.assertTrue(flag)
+        self.assertEqual(obj, [None]*len(messages))
 
     def testTestAll(self):
         comm = self.COMM
@@ -248,7 +280,7 @@ class BaseTest(object):
         self.assertFalse(flag)
         flag, obj = self.RequestType.testall(requests)
         self.assertFalse(flag)
-        self.assertEqual(obj, None)
+        self.assertIsNone(obj)
         comm.barrier()
         for smess in messages:
             rmess = comm.recv(None, rank)
@@ -260,6 +292,7 @@ class BaseTest(object):
         flag, _ = self.RequestType.testall(requests)
         self.assertTrue(flag)
 
+    @unittest.skipMPI('mvapich', MPI.COMM_WORLD.Get_size() > 1)
     def testWaitAll(self):
         comm = self.COMM
         size = comm.Get_size()
@@ -275,7 +308,7 @@ class BaseTest(object):
         self.assertFalse(flag)
         flag, obj = self.RequestType.testall(requests)
         self.assertFalse(flag)
-        self.assertEqual(obj, None)
+        self.assertIsNone(obj)
         comm.barrier()
         for smess in messages:
             rmess = comm.recv(None, source)
@@ -298,7 +331,7 @@ class BaseTest(object):
         for status in statuses:
             self.assertEqual(status.source, source)
             self.assertEqual(status.tag, 0)
-            self.assertTrue(status.Get_count() > 0)
+            self.assertGreater(status.Get_count(), 0)
         comm.barrier()
         statuses = (MPI.Status(),)
         self.RequestType.waitall(requests1, statuses)
@@ -310,7 +343,7 @@ class BaseTest(object):
         for smess in messages:
             rmess = self.COMM.sendrecv(smess, MPI.PROC_NULL, 0,
                                        None,  MPI.PROC_NULL, 0)
-            self.assertEqual(rmess, None)
+            self.assertIsNone(rmess)
         if isinstance(self.COMM, pkl5.Comm):
             rbuf = MPI.Alloc_mem(32)
         else:
@@ -320,7 +353,7 @@ class BaseTest(object):
             source = (rank - 1) % size
             rmess = self.COMM.sendrecv(None, dest,  0,
                                        None, source, 0)
-            self.assertEqual(rmess, None)
+            self.assertIsNone(rmess)
             rmess = self.COMM.sendrecv(smess, dest,  0,
                                        None, source, 0)
             self.assertEqual(rmess, smess)
@@ -340,7 +373,7 @@ class BaseTest(object):
         for smess in messages:
             self.COMM.send(smess, MPI.PROC_NULL)
             rmess = self.COMM.recv(None, MPI.PROC_NULL, 0)
-            self.assertEqual(rmess, None)
+            self.assertIsNone(rmess)
         if size == 1: return
         smess = None
         if rank == 0:
@@ -381,14 +414,14 @@ class BaseTest(object):
             self.assertFalse(flag)
             for smess in messages:
                 request = comm.issend(smess, comm.rank, 123)
-                self.assertTrue(isinstance(request, self.RequestType))
-                self.assertTrue(request != MPI.REQUEST_NULL)
-                self.assertFalse(request == MPI.REQUEST_NULL)
-                self.assertTrue(request == self.RequestType(request))
-                self.assertFalse(request != self.RequestType(request))
-                self.assertTrue(request != None)
-                self.assertFalse(request == None)
-                self.assertTrue(request)
+                self.assertIsInstance(request, self.RequestType)
+                self.assertTrue (bool(request != MPI.REQUEST_NULL))
+                self.assertFalse(bool(request == MPI.REQUEST_NULL))
+                self.assertTrue (bool(request == self.RequestType(request)))
+                self.assertFalse(bool(request != self.RequestType(request)))
+                self.assertTrue (bool(request != None))
+                self.assertFalse(bool(request == None))
+                self.assertTrue (bool(request))
                 while not comm.iprobe(MPI.ANY_SOURCE, MPI.ANY_TAG, status): pass
                 self.assertEqual(status.source, comm.rank)
                 self.assertEqual(status.tag, 123)
@@ -399,13 +432,13 @@ class BaseTest(object):
                 flag, obj = request.test()
                 self.assertTrue(request)
                 self.assertFalse(flag)
-                self.assertEqual(obj, None)
+                self.assertIsNone(obj)
                 obj = comm.recv(None, comm.rank, 123)
                 self.assertEqual(obj, smess)
                 self.assertTrue(request)
                 obj = request.wait()
                 self.assertFalse(request)
-                self.assertEqual(obj, None)
+                self.assertIsNone(obj)
         finally:
             comm.Free()
 
@@ -413,44 +446,45 @@ class BaseTest(object):
         comm = self.COMM.Dup()
         try:
             message = comm.mprobe(MPI.PROC_NULL)
-            self.assertTrue(isinstance(message, self.MessageType))
-            self.assertTrue(message == MPI.MESSAGE_NO_PROC)
-            self.assertFalse(message != MPI.MESSAGE_NO_PROC)
-            self.assertTrue(message != None)
-            self.assertFalse(message == None)
+            self.assertIsInstance(message, self.MessageType)
+            self.assertTrue (bool(message == MPI.MESSAGE_NO_PROC))
+            self.assertFalse(bool(message != MPI.MESSAGE_NO_PROC))
+            self.assertTrue (bool(message != None))
+            self.assertFalse(bool(message == None))
             rmess = message.recv()
-            self.assertTrue(message == MPI.MESSAGE_NULL)
-            self.assertFalse(message != MPI.MESSAGE_NULL)
-            self.assertTrue(rmess is None)
+            self.assertTrue (bool(message == MPI.MESSAGE_NULL))
+            self.assertFalse(bool(message != MPI.MESSAGE_NULL))
+            self.assertIsNone(rmess)
 
             message = comm.mprobe(MPI.PROC_NULL)
-            self.assertTrue(isinstance(message, self.MessageType))
-            self.assertTrue(message == MPI.MESSAGE_NO_PROC)
-            self.assertFalse(message != MPI.MESSAGE_NO_PROC)
+            self.assertIsInstance(message, self.MessageType)
+            self.assertTrue (bool(message == MPI.MESSAGE_NO_PROC))
+            self.assertFalse(bool(message != MPI.MESSAGE_NO_PROC))
             request = message.irecv()
-            self.assertTrue(message == MPI.MESSAGE_NULL)
-            self.assertFalse(message != MPI.MESSAGE_NULL)
-            self.assertTrue(request != MPI.REQUEST_NULL)
-            self.assertFalse(request == MPI.REQUEST_NULL)
+            self.assertTrue (bool(message == MPI.MESSAGE_NULL))
+            self.assertFalse(bool(message != MPI.MESSAGE_NULL))
+            self.assertTrue (bool(request != MPI.REQUEST_NULL))
+            self.assertFalse(bool(request == MPI.REQUEST_NULL))
             rmess = request.wait()
-            self.assertTrue(request == MPI.REQUEST_NULL)
-            self.assertFalse(request != MPI.REQUEST_NULL)
-            self.assertTrue(rmess is None)
+            self.assertTrue (bool(request == MPI.REQUEST_NULL))
+            self.assertFalse(bool(request != MPI.REQUEST_NULL))
+            self.assertIsNone(rmess)
 
             for smess in messages:
                 request = comm.issend(smess, comm.rank, 123)
                 message = comm.mprobe(comm.rank, 123)
-                self.assertTrue(isinstance(message, self.MessageType))
-                self.assertTrue(message == self.MessageType(message))
-                self.assertFalse(message != self.MessageType(message))
+                self.assertIsInstance(message, self.MessageType)
+                self.assertTrue (bool(message == self.MessageType(message)))
+                self.assertFalse(bool(message != self.MessageType(message)))
                 rmess = message.recv()
                 self.assertEqual(rmess, smess)
                 obj = request.wait()
                 self.assertFalse(request)
-                self.assertTrue(obj is None)
+                self.assertIsNone(obj)
                 flag, obj = request.test()
                 self.assertTrue(flag)
-                self.assertTrue(obj is None)
+                self.assertIsNone(obj)
+                message.free()
             for smess in messages:
                 request = comm.issend(smess, comm.rank, 123)
                 status = MPI.Status()
@@ -484,20 +518,20 @@ class BaseTest(object):
                 self.assertEqual(rmess, smess)
                 flag, obj = rreq.test()
                 self.assertTrue(flag)
-                self.assertTrue(obj is None)
+                self.assertIsNone(obj)
                 self.assertTrue(request)
                 obj = request.wait()
                 self.assertFalse(request)
-                self.assertTrue(obj is None)
+                self.assertIsNone(obj)
                 flag, obj = request.test()
                 self.assertTrue(flag)
-                self.assertTrue(obj is None)
+                self.assertIsNone(obj)
             for smess in messages:
                 request = comm.issend(smess, comm.rank, 123)
                 message = comm.mprobe(MPI.ANY_SOURCE, MPI.ANY_TAG)
                 rreq = message.irecv()
                 rreq.test()
-                request.Free()
+                request.free()
         finally:
             comm.Free()
 
@@ -507,21 +541,21 @@ class BaseTest(object):
             status = MPI.Status()
             for smess in messages:
                 message = comm.improbe(MPI.PROC_NULL)
-                self.assertTrue(isinstance(message, self.MessageType))
+                self.assertIsInstance(message, self.MessageType)
                 self.assertEqual(message, MPI.MESSAGE_NO_PROC)
             for smess in messages:
                 message = comm.improbe(comm.rank, 123)
-                self.assertEqual(message, None)
+                self.assertIsNone(message)
                 request = comm.issend(smess, comm.rank, 123)
                 while not comm.iprobe(comm.rank, 123): pass
                 message = comm.improbe(comm.rank, 123)
-                self.assertTrue(isinstance(message, self.MessageType))
+                self.assertIsInstance(message, self.MessageType)
                 rmess = message.recv()
                 self.assertEqual(rmess, smess)
                 request.wait()
             for smess in messages:
                 message = comm.improbe(comm.rank, 123)
-                self.assertEqual(message, None)
+                self.assertIsNone(message)
                 request = comm.issend(smess, comm.rank, 123)
                 while not comm.iprobe(comm.rank, 123): pass
                 message = comm.improbe(MPI.ANY_SOURCE, MPI.ANY_TAG, status)
@@ -555,7 +589,7 @@ class BaseTest(object):
                 self.assertFalse(request)
             for smess in messages:
                 message = self.MessageType.iprobe(comm, comm.rank, 123)
-                self.assertEqual(message, None)
+                self.assertIsNone(message)
                 request = comm.issend(smess, comm.rank, 123)
                 while not comm.iprobe(comm.rank, 123): pass
                 message = self.MessageType.iprobe(comm, MPI.ANY_SOURCE, MPI.ANY_TAG, status)
@@ -613,22 +647,14 @@ class BaseTest(object):
         self.assertEqual(msg, self.MessageType(MPI.MESSAGE_NO_PROC))
         self.assertNotEqual(msg, MPI.MESSAGE_NULL)
 
-    def testBcastIntra(self, msglist=None, check=None):
-        comm = self.COMM
-        size = comm.Get_size()
-        for smess in (msglist or messages):
-            for root in range(size):
-                rmess = comm.bcast(smess, root)
-                if msglist and check:
-                    self.assertTrue(check(rmess))
-                else:
-                    self.assertEqual(rmess, smess)
-
-    def testBcastInter(self, msglist=None, check=None):
-        basecomm = self.COMM
+    @staticmethod
+    def make_intercomm(basecomm):
+        if unittest.is_mpi('msmpi') and MPI.COMM_WORLD.Get_size() >= 3:
+            raise unittest.SkipTest("msmpi")
         size = basecomm.Get_size()
         rank = basecomm.Get_rank()
-        if size == 1: return
+        if size == 1:
+            raise unittest.SkipTest("comm.size==1")
         if rank < size // 2 :
             COLOR = 0
             local_leader = 0
@@ -648,31 +674,168 @@ class BaseTest(object):
         intracomm.Free()
         if isinstance(basecomm, pkl5.Intracomm):
             intercomm = pkl5.Intercomm(intercomm)
-        rank = intercomm.Get_rank()
-        size = intercomm.Get_size()
-        rsize = intercomm.Get_remote_size()
+        return intercomm, COLOR
+
+    def testBcastIntra(self, msglist=None, check=None):
+        comm = self.COMM
+        size = comm.Get_size()
+        for smess in (msglist or messages):
+            for root in range(size):
+                rmess = comm.bcast(smess, root)
+                if msglist and check:
+                    self.assertTrue(check(rmess))
+                else:
+                    self.assertEqual(rmess, smess)
+
+    def testBcastInter(self, msglist=None, check=None):
+        comm, COLOR = self.make_intercomm(self.COMM)
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+        rsize = comm.Get_remote_size()
         for smess in (msglist or messages)[:1]:
-            intercomm.barrier()
+            comm.barrier()
             for color in [0, 1]:
                 if COLOR == color:
                     for root in range(size):
                         if root == rank:
-                            rmess = intercomm.bcast(smess, root=MPI.ROOT)
+                            rmess = comm.bcast(smess, root=MPI.ROOT)
                         else:
-                            rmess = intercomm.bcast(None, root=MPI.PROC_NULL)
-                        self.assertEqual(rmess, None)
+                            rmess = comm.bcast(None, root=MPI.PROC_NULL)
+                        self.assertIsNone(rmess)
                 else:
                     for root in range(rsize):
-                        rmess = intercomm.bcast(None, root=root)
+                        rmess = comm.bcast(None, root=root)
                         if msglist and check:
                             self.assertTrue(check(rmess))
                         else:
                             self.assertEqual(rmess, smess)
-        if isinstance(intercomm, pkl5.Intercomm):
-            bcast = intercomm.bcast
-            rsize = intercomm.Get_remote_size()
+        if isinstance(comm, pkl5.Comm):
+            bcast = comm.bcast
+            rsize = comm.Get_remote_size()
             self.assertRaises(MPI.Exception, bcast, None, root=rsize)
-        intercomm.Free()
+        comm.Free()
+
+    def testGatherIntra(self):
+        comm = self.COMM
+        size = comm.Get_size()
+        rank = comm.Get_rank()
+        for smess in messages:
+            for root in range(size):
+                rmess = comm.gather(smess, root)
+                if rank == root:
+                    self.assertEqual(rmess, [smess]*size)
+                else:
+                    self.assertIsNone(rmess)
+        self.assertRaises(MPI.Exception, comm.gather, None, root=-1)
+        self.assertRaises(MPI.Exception, comm.gather, None, root=size)
+
+    def testGatherInter(self):
+        comm, COLOR = self.make_intercomm(self.COMM)
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+        rsize = comm.Get_remote_size()
+        for smess in messages:
+            for color in [0, 1]:
+                if color == COLOR:
+                    for root in range(size):
+                        if root == rank:
+                            rmess = comm.gather(smess, root=MPI.ROOT)
+                            self.assertEqual(rmess, [smess] * rsize)
+                        else:
+                            rmess = comm.gather(None, root=MPI.PROC_NULL)
+                            self.assertIsNone(rmess)
+                else:
+                    for root in range(rsize):
+                        rmess = comm.gather(smess, root=root)
+                        self.assertIsNone(rmess)
+        self.assertRaises(MPI.Exception, comm.gather, None, root=max(size,rsize))
+        self.assertRaises(MPI.Exception, comm.gather, None, root=max(size,rsize))
+        comm.Free()
+
+    def testScatterIntra(self):
+        comm = self.COMM
+        size = comm.Get_size()
+        for smess in messages:
+            for root in range(size):
+                rmess = comm.scatter(None, root)
+                self.assertIsNone(rmess)
+                rmess = comm.scatter([smess]*size, root)
+                self.assertEqual(rmess, smess)
+                rmess = comm.scatter(iter([smess]*size), root)
+                self.assertEqual(rmess, smess)
+        self.assertRaises(MPI.Exception, comm.scatter, [None]*size, root=-1)
+        self.assertRaises(MPI.Exception, comm.scatter, [None]*size, root=size)
+        if size == 1:
+            self.assertRaises(ValueError, comm.scatter, [None]*(size-1), root=0)
+            self.assertRaises(ValueError, comm.scatter, [None]*(size+1), root=0)
+
+    def testScatterInter(self):
+        comm, COLOR = self.make_intercomm(self.COMM)
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+        rsize = comm.Get_remote_size()
+        for smess in messages + [messages]:
+            for color in [0, 1]:
+                if color == COLOR:
+                    for root in range(size):
+                        if root == rank:
+                            rmess = comm.scatter([smess] * rsize, root=MPI.ROOT)
+                        else:
+                            rmess = comm.scatter(None, root=MPI.PROC_NULL)
+                        self.assertIsNone(rmess)
+                else:
+                    for root in range(rsize):
+                        rmess = comm.scatter(None, root=root)
+                        self.assertEqual(rmess, smess)
+        self.assertRaises(MPI.Exception, comm.scatter, None, root=max(size, rsize))
+        self.assertRaises(MPI.Exception, comm.scatter, None, root=max(size, rsize))
+        comm.Free()
+
+    def testAllgatherIntra(self):
+        comm = self.COMM
+        size = comm.Get_size()
+        for smess in messages:
+            rmess = comm.allgather(None)
+            self.assertEqual(rmess, [None]*size)
+            rmess = comm.allgather(smess)
+            self.assertEqual(rmess, [smess]*size)
+
+    def testAllgatherInter(self):
+        comm, COLOR = self.make_intercomm(self.COMM)
+        size = comm.Get_remote_size()
+        for smess in messages:
+            rmess = comm.allgather(None)
+            self.assertEqual(rmess, [None]*size)
+            rmess = comm.allgather(smess)
+            self.assertEqual(rmess, [smess]*size)
+        comm.Free()
+
+    def testAlltoallIntra(self):
+        comm = self.COMM
+        size = comm.Get_size()
+        for smess in messages:
+            rmess = comm.alltoall(None)
+            self.assertEqual(rmess, [None]*size)
+            rmess = comm.alltoall([smess]*size)
+            self.assertEqual(rmess, [smess]*size)
+            rmess = comm.alltoall(iter([smess]*size))
+            self.assertEqual(rmess, [smess]*size)
+        self.assertRaises(ValueError, comm.alltoall, [None]*(size-1))
+        self.assertRaises(ValueError, comm.alltoall, [None]*(size+1))
+
+    def testAlltoallInter(self):
+        comm, COLOR = self.make_intercomm(self.COMM)
+        size = comm.Get_remote_size()
+        for smess in messages:
+            rmess = comm.alltoall(None)
+            self.assertEqual(rmess, [None]*size)
+            rmess = comm.alltoall([smess]*size)
+            self.assertEqual(rmess, [smess]*size)
+            rmess = comm.alltoall(iter([smess]*size))
+            self.assertEqual(rmess, [smess]*size)
+        self.assertRaises(ValueError, comm.alltoall, [None]*(size-1))
+        self.assertRaises(ValueError, comm.alltoall, [None]*(size+1))
+        comm.Free()
 
     @unittest.skipIf(numpy is None, 'numpy')
     def testBigMPI(self):
@@ -705,7 +868,7 @@ class BaseTest(object):
             )
             self.assertTrue(numpy.all(rmess[0] == source))
             self.assertTrue(numpy.all(rmess[1] == rank))
-            self.assertTrue(status.Get_elements(MPI.BYTE) > 0)
+            self.assertGreater(status.Get_elements(MPI.BYTE), 0)
             comm.barrier()
             status = MPI.Status()
             smess = (a, b)
@@ -713,7 +876,7 @@ class BaseTest(object):
             rmess = comm.mprobe(source, 123).irecv().wait(status)
             self.assertTrue(numpy.all(rmess[0] == source))
             self.assertTrue(numpy.all(rmess[1] == rank))
-            self.assertTrue(status.Get_elements(MPI.BYTE) > 0)
+            self.assertGreater(status.Get_elements(MPI.BYTE), 0)
             request.Free()
             comm.barrier()
             check = lambda x: numpy.all(x == 42)
@@ -724,20 +887,20 @@ class BaseTest(object):
             self.testBcastInter([(c, c.copy())], check2)
 
 
-class BaseTestPKL5(object):
+class BaseTestPKL5:
     CommType = pkl5.Intracomm
     MessageType = pkl5.Message
     RequestType = pkl5.Request
 
     def setUp(self):
-        super(BaseTestPKL5, self).setUp()
+        super().setUp()
         self.pickle_prev = pkl5.pickle
         self.pickle = pkl5.Pickle()
         self.pickle.THRESHOLD = 0
         pkl5.pickle = self.pickle
 
     def tearDown(self):
-        super(BaseTestPKL5, self).tearDown()
+        super().tearDown()
         pkl5.pickle = self.pickle_prev
 
     @unittest.skipIf(numpy is None, 'numpy')
@@ -748,8 +911,9 @@ class BaseTestPKL5(object):
         protocols = list(range(-2, pickle.PROTOCOL+1))
         for protocol in [None] + protocols:
             pickle.PROTOCOL = protocol
-            for threshold in (-1, 0, 64, 256):
+            for threshold in (-1, 0, 64, 256, None):
                 pickle.THRESHOLD = threshold
+                threshold = pickle.THRESHOLD
                 for slen in (0, 32, 64, 128, 256, 512):
                     sobj = numpy.empty(slen, dtype='i')
                     sobj.fill(rank)
@@ -759,15 +923,18 @@ class BaseTestPKL5(object):
                         None, rank, 42)
                     self.assertTrue(numpy.all(sobj==robj))
                     #
-                    data, bufs = pickle.dumps(sobj)
-                    robj = pickle.loads(data, bufs)
+                    data, bufs = pickle.dumps_oob(sobj)
+                    self.assertIs(type(data), bytes)
+                    self.assertIs(type(bufs), list)
+                    robj = pickle.loads_oob(data, bufs)
                     self.assertTrue(numpy.all(sobj==robj))
-                    if protocol is None:
-                        protocol = MPI.Pickle().PROTOCOL
-                    if protocol < 0:
-                        protocol = pkl5._PROTOCOL
-                    if protocol >= 5 and sobj.nbytes >= threshold:
+                    have_pickle5 = (
+                        sys.version_info >= (3, 8) or
+                        'pickle5' in sys.modules
+                    )
+                    if sobj.nbytes >= threshold and have_pickle5:
                         self.assertEqual(len(bufs), 1)
+                        self.assertIs(type(bufs[0]), MPI.buffer)
                     else:
                         self.assertEqual(len(bufs), 0)
 

@@ -1,4 +1,6 @@
 version: 2.1
+orbs:
+  codecov: codecov/codecov@4.0.1
 
 jobs:
   test:
@@ -12,13 +14,16 @@ jobs:
     executor: << parameters.os >>
     steps:
       - checkout
-      - run: .circleci/test-package py=<< parameters.py >> mpi=<< parameters.mpi >>
-      - run: .circleci/upload-coverage
+      - run: .circleci/step-setup    py=<< parameters.py >> mpi=<< parameters.mpi >>
+      - run: .circleci/step-install  py=<< parameters.py >> mpi=<< parameters.mpi >>
+      - run: .circleci/step-coverage py=<< parameters.py >> mpi=<< parameters.mpi >>
+      - run: apt-get update && apt-get install --yes curl gnupg  # codecov/upload
+      - codecov/upload
 
 executors:
   linux:
     docker:
-      - image: condaforge/linux-anvil-comp7
+      - image: condaforge/miniforge3
 
 workflows:
   test-all:
@@ -36,12 +41,11 @@ workflows:
               os:
                 - linux
               py:
-                - "3.5"
-                - "3.6"
-                - "3.7"
                 - "3.8"
                 - "3.9"
-               #- "3.10"
+                - "3.10"
+                - "3.11"
+                - "3.12"
               mpi:
                 - "mpich"
                 - "openmpi"

@@ -1,52 +1,56 @@
 import sys
+import itertools
 from mpi4py import MPI
-try:
-    from collections import OrderedDict
-except ImportError:
-    OrderedDict = dict
+
 try:
     import array
 except ImportError:
     array = None
+
 try:
     import numpy
 except ImportError:
     numpy = None
+
 try:
     import cupy
+    cupy_version = tuple(map(int, cupy.__version__.split('.', 2)[:2]))
 except ImportError:
     cupy = None
+
 try:
     import numba
     import numba.cuda
-    from distutils.version import StrictVersion
-    numba_version = StrictVersion(numba.__version__).version
+    numba_version = tuple(map(int, numba.__version__.split('.', 2)[:2]))
     if numba_version < (0, 48):
         import warnings
-        warnings.warn('To test Numba GPU arrays, use Numba v0.48.0+.',
-                      RuntimeWarning)
+        try:
+            warnings.warn(
+                'To test Numba GPU arrays, use Numba v0.48.0+.',
+                RuntimeWarning, stacklevel=1,
+            )
+        except RuntimeWarning:
+            pass
+        del numba_version
         numba = None
 except ImportError:
     numba = None
 
 
-__all__ = ['allclose', 'subTest']
+__all__ = ['loop', 'test']
 
-def allclose(a, b, rtol=1.e-5, atol=1.e-8):
-    try: iter(a)
-    except TypeError: a = [a]
-    try: iter(b)
-    except TypeError: b = [b]
-    for x, y in zip(a, b):
-        if abs(x-y) > (atol + rtol * abs(y)):
-            return False
-    return True
 
 def make_typemap(entries):
-    typemap = OrderedDict(entries)
-    for typecode, datatype in entries:
-        if datatype == MPI.DATATYPE_NULL:
-            del typemap[typecode]
+    if sys.version_info[:2] > (3, 7):
+        dict_type = dict
+    else:
+        from collections import OrderedDict
+        dict_type = OrderedDict
+    typemap = dict_type(
+        (typecode, datatype)
+        for typecode, datatype in entries
+        if datatype != MPI.DATATYPE_NULL
+    )
     return typemap
 
 TypeMap = make_typemap([
@@ -95,18 +99,18 @@ TypeMapComplex = make_typemap([
 
 ArrayBackends = []
 
+
 def add_backend(cls):
     ArrayBackends.append(cls)
     return cls
 
-class BaseArray(object):
+
+class BaseArray:
 
     backend = None
 
     TypeMap = TypeMap.copy()
     TypeMap.pop('g', None)
-    if sys.version_info[:2] < (3, 3):
-        TypeMap.pop('q', None)
 
     def __len__(self):
         return len(self.array)
@@ -202,22 +206,26 @@ if numpy is not None:
         backend = 'numpy'
 
         TypeMap = make_typemap([])
-        #TypeMap.update(TypeMapBool)
+        TypeMap.update(TypeMapBool)
         TypeMap.update(TypeMapInteger)
-        #TypeMap.update(TypeMapUnsigned)
+        TypeMap.update(TypeMapUnsigned)
         TypeMap.update(TypeMapFloat)
         TypeMap.update(TypeMapComplex)
 
         def __init__(self, arg, typecode, shape=None):
             if isinstance(arg, (int, float, complex)):
-                if shape is None: shape = ()
+                if shape is None:
+                    shape = ()
             else:
-                if shape is None: shape = len(arg)
+                if shape is None:
+                    shape = len(arg)
             self.array = numpy.zeros(shape, typecode)
             if isinstance(arg, (int, float, complex)):
+                arg = numpy.asarray(arg).astype(typecode)
                 self.array.fill(arg)
             else:
-                self.array[:] = numpy.asarray(arg, typecode)
+                arg = numpy.asarray(arg).astype(typecode)
+                self.array[...] = arg
 
         @property
         def address(self):
@@ -245,7 +253,8 @@ try:
 except ImportError:
     dlpack = None
 
-class BaseDLPackCPU(object):
+
+class BaseDLPackCPU:
 
     def __dlpack_device__(self):
         return (dlpack.DLDeviceType.kDLCPU, 0)
@@ -267,7 +276,7 @@ if dlpack is not None and array is not None:
         backend = 'dlpack-array'
 
         def __init__(self, arg, typecode, shape=None):
-            super(DLPackArray, self).__init__(arg, typecode, shape)
+            super().__init__(arg, typecode, shape)
 
 
 if dlpack is not None and numpy is not None:
@@ -278,7 +287,7 @@ if dlpack is not None and numpy is not None:
         backend = 'dlpack-numpy'
 
         def __init__(self, arg, typecode, shape=None):
-            super(DLPackNumPy, self).__init__(arg, typecode, shape)
+            super().__init__(arg, typecode, shape)
 
 
 def typestr(typecode, itemsize):
@@ -301,7 +310,7 @@ def typestr(typecode, itemsize):
     return typestr
 
 
-class BaseFakeGPUArray(object):
+class BaseFakeGPUArray:
 
     def set_interface(self, shape, readonly=False):
         self.__cuda_array_interface__ = dict(
@@ -321,7 +330,7 @@ if array is not None:
     class FakeGPUArrayBasic(BaseFakeGPUArray, ArrayArray):
 
         def __init__(self, arg, typecode, shape=None, readonly=False):
-            super(FakeGPUArrayBasic, self).__init__(arg, typecode, shape)
+            super().__init__(arg, typecode, shape)
             self.set_interface((len(self),), readonly)
 
 
@@ -331,7 +340,7 @@ if numpy is not None:
     class FakeGPUArrayNumPy(BaseFakeGPUArray, ArrayNumPy):
 
         def __init__(self, arg, typecode, shape=None, readonly=False):
-            super(FakeGPUArrayNumPy, self).__init__(arg, typecode, shape)
+            super().__init__(arg, typecode, shape)
             self.set_interface(self.array.shape, readonly)
 
 
@@ -343,9 +352,10 @@ if cupy is not None:
         backend = 'cupy'
 
         TypeMap = make_typemap([])
-        #TypeMap.update(TypeMapBool)
+        if cupy_version >= (11, 6):
+            TypeMap.update(TypeMapBool)
         TypeMap.update(TypeMapInteger)
-        #TypeMap.update(TypeMapUnsigned)
+        TypeMap.update(TypeMapUnsigned)
         TypeMap.update(TypeMapFloat)
         TypeMap.update(TypeMapComplex)
         try:
@@ -359,9 +369,11 @@ if cupy is not None:
 
         def __init__(self, arg, typecode, shape=None, readonly=False):
             if isinstance(arg, (int, float, complex)):
-                if shape is None: shape = ()
+                if shape is None:
+                    shape = ()
             else:
-                if shape is None: shape = len(arg)
+                if shape is None:
+                    shape = len(arg)
             self.array = cupy.zeros(shape, typecode)
             if isinstance(arg, (int, float, complex)):
                 self.array.fill(arg)
@@ -440,9 +452,9 @@ if numba is not None:
         backend = 'numba'
 
         TypeMap = make_typemap([])
-        #TypeMap.update(TypeMapBool)
+        TypeMap.update(TypeMapBool)
         TypeMap.update(TypeMapInteger)
-        #TypeMap.update(TypeMapUnsigned)
+        TypeMap.update(TypeMapUnsigned)
         TypeMap.update(TypeMapFloat)
         TypeMap.update(TypeMapComplex)
 
@@ -453,9 +465,11 @@ if numba is not None:
 
         def __init__(self, arg, typecode, shape=None, readonly=False):
             if isinstance(arg, (int, float, complex)):
-                if shape is None: shape = ()
+                if shape is None:
+                    shape = ()
             else:
-                if shape is None: shape = len(arg)
+                if shape is None:
+                    shape = len(arg)
             self.array = numba.cuda.device_array(shape, typecode)
             if isinstance(arg, (int, float, complex)):
                 if self.array.size > 0:
@@ -503,15 +517,29 @@ if numba is not None:
             return self.array
 
 
-def subTest(case, skip=(), skiptypecode=()):
+def loop(*args):
+    loop.array = None
+    loop.typecode = None
     for array in ArrayBackends:
-        if array.backend == skip: continue
-        if array.backend in skip: continue
+        loop.array = array
         for typecode in array.TypeMap:
-            if typecode == skiptypecode: continue
-            if typecode in skiptypecode: continue
-            with case.subTest(backend=array.backend, typecode=typecode):
-                try:
-                    yield array, typecode
-                except GeneratorExit:
-                    return
+            loop.typecode = typecode
+            if not args:
+                yield array, typecode
+            else:
+                for prod in itertools.product(*args):
+                    yield (array, typecode) + prod
+    del loop.array
+    del loop.typecode
+
+
+def test(case, **kargs):
+    return case.subTest(
+        typecode=loop.typecode,
+        backend=loop.array.backend,
+        **kargs,
+    )
+
+
+def scalar(arg):
+    return loop.array(arg, loop.typecode, 1)[0]

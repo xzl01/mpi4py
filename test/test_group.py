@@ -2,7 +2,7 @@ from mpi4py import MPI
 import mpiunittest as unittest
 
 
-class BaseTestGroup(object):
+class BaseTestGroup:
 
     def testProperties(self):
         group = self.GROUP
@@ -14,8 +14,10 @@ class BaseTestGroup(object):
         group = MPI.COMM_WORLD.Get_group()
         gcmp = MPI.Group.Compare(self.GROUP, group)
         group.Free()
-        self.assertTrue(gcmp in results)
+        self.assertIn(gcmp, results)
         gcmp = MPI.Group.Compare(self.GROUP, self.GROUP)
+        self.assertEqual(gcmp, MPI.IDENT)
+        gcmp = self.GROUP.Compare(self.GROUP)
         self.assertEqual(gcmp, MPI.IDENT)
 
     def testDup(self):
@@ -93,8 +95,14 @@ class BaseTestGroup(object):
         ranks2 = MPI.Group.Translate_ranks(group1, ranks1)
         ranks2 = MPI.Group.Translate_ranks(group1, ranks1, group2)
         self.assertEqual(list(ranks1), list(ranks2))
+        group =  self.GROUP
+        ranks1 = list(range(group.Get_size()))
+        ranks2 = group.Translate_ranks(group=group)
+        self.assertEqual(list(ranks1), list(ranks2))
+        ranks2 = group.Translate_ranks()
+        self.assertEqual(len(ranks2), group.Get_size())
+        self.assertNotIn(MPI.UNDEFINED, set(ranks2))
 
-    @unittest.skipMPI('PlatformMPI')
     @unittest.skipMPI('MPICH1')
     @unittest.skipMPI('LAM/MPI')
     def testTranslRanksProcNull(self):
@@ -114,12 +122,16 @@ class BaseTestGroup(object):
         for rank in ranks2:
             self.assertEqual(rank, MPI.UNDEFINED)
 
+    def testPickle(self):
+        from pickle import dumps
+        self.assertRaises(ValueError, dumps, self.GROUP)
+
 
 class TestGroupNull(unittest.TestCase):
 
-    def testContructor(self):
+    def testConstructor(self):
         group = MPI.Group()
-        self.assertFalse(group is MPI.GROUP_NULL)
+        self.assertIsNot(group, MPI.GROUP_NULL)
         self.assertEqual(group, MPI.GROUP_NULL)
 
     def testNull(self):
@@ -129,41 +141,73 @@ class TestGroupNull(unittest.TestCase):
         self.assertFalse(group_null)
         self.assertEqual(group_null, GROUP_NULL)
 
+    def testPickle(self):
+        from pickle import dumps, loads
+        group_null = loads(dumps(MPI.GROUP_NULL))
+        self.assertIs(group_null, MPI.GROUP_NULL)
+        group_null = loads(dumps(MPI.Group(MPI.GROUP_NULL)))
+        self.assertIsNot(group_null, MPI.GROUP_NULL)
+        self.assertEqual(group_null, MPI.GROUP_NULL)
+
+
 class TestGroupEmpty(BaseTestGroup, unittest.TestCase):
+
     def setUp(self):
         self.GROUP = MPI.GROUP_EMPTY
+
     def testEmpty(self):
         self.assertTrue(self.GROUP)
+
     def testSize(self):
         size = self.GROUP.Get_size()
         self.assertEqual(size, 0)
+
     def testRank(self):
         rank = self.GROUP.Get_rank()
         self.assertEqual(rank, MPI.UNDEFINED)
+
     @unittest.skipMPI('MPICH1')
     def testTranslRanks(self):
-        super(TestGroupEmpty, self).testTranslRanks()
+        super().testTranslRanks()
+
+    def testPickle(self):
+        from pickle import dumps, loads
+        group_empty = loads(dumps(MPI.GROUP_EMPTY))
+        self.assertIs(group_empty, MPI.GROUP_EMPTY)
+        group_empty = loads(dumps(MPI.Group(MPI.GROUP_EMPTY)))
+        self.assertIsNot(group_empty, MPI.GROUP_EMPTY)
+        self.assertEqual(group_empty, MPI.GROUP_EMPTY)
+
 
 class TestGroupSelf(BaseTestGroup, unittest.TestCase):
+
     def setUp(self):
         self.GROUP = MPI.COMM_SELF.Get_group()
+
     def tearDown(self):
         self.GROUP.Free()
+
     def testSize(self):
         size = self.GROUP.Get_size()
         self.assertEqual(size, 1)
+
     def testRank(self):
         rank = self.GROUP.Get_rank()
         self.assertEqual(rank, 0)
 
+
 class TestGroupWorld(BaseTestGroup, unittest.TestCase):
+
     def setUp(self):
         self.GROUP = MPI.COMM_WORLD.Get_group()
+
     def tearDown(self):
         self.GROUP.Free()
+
     def testSize(self):
         size = self.GROUP.Get_size()
-        self.assertTrue(size >= 1)
+        self.assertGreaterEqual(size, 1)
+
     def testRank(self):
         size = self.GROUP.Get_size()
         rank = self.GROUP.Get_rank()

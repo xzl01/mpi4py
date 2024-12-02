@@ -1,30 +1,42 @@
-from textwrap import dedent
+import os
 import inspect
+import textwrap
+
+
+def is_cyfunction(obj):
+    return type(obj).__name__ == 'cython_function_or_method'
+
 
 def is_function(obj):
     return (
-        inspect.isbuiltin(obj) or
-        type(obj) is type(ord)
+        inspect.isbuiltin(obj)
+        or is_cyfunction(obj)
+        or type(obj) is type(ord)
     )
+
 
 def is_method(obj):
     return (
-        inspect.ismethoddescriptor(obj) or
-        type(obj) in (
+        inspect.ismethoddescriptor(obj)
+        or inspect.ismethod(obj)
+        or is_cyfunction(obj)
+        or type(obj) in (
             type(str.index),
             type(str.__add__),
             type(str.__new__),
         )
     )
 
+
 def is_classmethod(obj):
     return (
-        inspect.isbuiltin(obj) or
-        type(obj).__name__ in (
+        inspect.isbuiltin(obj)
+        or type(obj).__name__ in (
             'classmethod',
             'classmethod_descriptor',
         )
     )
+
 
 def is_staticmethod(obj):
     return (
@@ -33,11 +45,14 @@ def is_staticmethod(obj):
         )
     )
 
+
 def is_datadescr(obj):
     return inspect.isdatadescriptor(obj) and not hasattr(obj, 'fget')
 
+
 def is_property(obj):
     return inspect.isdatadescriptor(obj) and hasattr(obj, 'fget')
+
 
 def is_class(obj):
     return inspect.isclass(obj) or type(obj) is type(int)
@@ -45,63 +60,82 @@ def is_class(obj):
 
 class Lines(list):
 
-    INDENT = " "*4
+    INDENT = " " * 4
     level = 0
 
     @property
     def add(self):
         return self
+
     @add.setter
     def add(self, lines):
         if lines is None:
             return
         if isinstance(lines, str):
-            lines = dedent(lines).strip().split("\n")
+            lines = textwrap.dedent(lines).strip().split('\n')
         indent = self.INDENT * self.level
         for line in lines:
             self.append(indent + line)
 
+
 def signature(obj):
     doc = obj.__doc__
-    sig = doc.split('\n', 1)[0].split('.', 1)[-1]
-    return sig
+    sig = doc.partition('\n')[0]
+    return sig or None
 
-def stubgen_constant(constant):
+
+def docstring(obj):
+    doc = obj.__doc__
+    doc = doc.partition('\n')[2]
+    doc = textwrap.dedent(doc).strip()
+    doc = f'"""{doc}"""'
+    doc = textwrap.indent(doc, Lines.INDENT)
+    return doc
+
+
+def visit_constant(constant):
     name, value = constant
     return f"{name}: Final[{type(value).__name__}] = ..."
 
-def stubgen_function(function):
+
+def visit_function(function):
     sig = signature(function)
     return f"def {sig}: ..."
 
-def stubgen_method(method):
+
+def visit_method(method):
     sig = signature(method)
     return f"def {sig}: ..."
 
-def stubgen_datadescr(datadescr):
+
+def visit_datadescr(datadescr):
     sig = signature(datadescr)
     return f"{sig}"
 
-def stubgen_property(prop, name=None):
+
+def visit_property(prop, name=None):
     sig = signature(prop.fget)
     pname = name or prop.fget.__name__
     ptype = sig.rsplit('->', 1)[-1].strip()
     return f"{pname}: {ptype}"
 
-def stubgen_constructor(cls, name='__init__'):
+
+def visit_constructor(cls, name='__init__', args=None):
     init = (name == '__init__')
     argname = cls.__name__.lower()
     argtype = cls.__name__
-    initarg = f"{argname}: Optional[{argtype}] = None"
+    initarg = args or f"{argname}: {argtype} | None = None"
     selfarg = 'self' if init else 'cls'
-    rettype = 'None' if init else argtype
+    rettype = 'None' if init else 'Self'
     arglist = f"{selfarg}, {initarg}"
     sig = f"{name}({arglist}) -> {rettype}"
     return f"def {sig}: ..."
 
-def stubgen_class(cls, done=None):
+
+def visit_class(cls, done=None):
     skip = {
         '__doc__',
+        '__dict__',
         '__module__',
         '__weakref__',
         '__pyx_vtable__',
@@ -109,23 +143,36 @@ def stubgen_class(cls, done=None):
         '__le__',
         '__ge__',
         '__gt__',
+        '__str__',
+        '__repr__',
     }
     special = {
-        '__len__' :  "__len__(self) -> int",
-        '__bool__':  "__bool__(self) -> bool",
-        '__hash__':  "__hash__(self) -> int",
-        '__int__':   "__int__(self) -> int",
-        '__index__': "__int__(self) -> int",
-        '__str__':   "__str__(self) -> str",
-        '__repr__':  "__repr__(self) -> str",
-        '__eq__':    "__eq__(self, other: object) -> bool",
-        '__ne__':    "__ne__(self, other: object) -> bool",
+        '__len__': ("self", "int", None),
+        '__bool__': ("self", "bool", None),
+        '__hash__': ("self", "int", None),
+        '__int__': ("self", "int", None),
+        '__index__': ("self", "int", None),
+        '__eq__': ("self", "__other: object", "bool", None),
+        '__ne__': ("self", "__other: object", "bool", None),
+        '__buffer__': ("self", "__flags: int", "memoryview", (3, 12)),
     }
+    constructor = (
+        '__new__',
+        '__init__',
+    )
 
     override = OVERRIDE.get(cls.__name__, {})
     done = set() if done is None else done
     lines = Lines()
 
+    try:
+        class sub(cls):
+            pass
+        final = False
+    except TypeError:
+        final = True
+    if final:
+        lines.add = "@final"
     base = cls.__base__
     if base is object:
         lines.add = f"class {cls.__name__}:"
@@ -133,13 +180,17 @@ def stubgen_class(cls, done=None):
         lines.add = f"class {cls.__name__}({base.__name__}):"
     lines.level += 1
 
-    for name in ('__new__', '__init__'):
+    for name in constructor:
+        if name in done:
+            continue
         if name in override:
             done.add(name)
             lines.add = override[name]
-        elif name in cls.__dict__:
+            continue
+        if name in cls.__dict__:
             done.add(name)
-            lines.add = stubgen_constructor(cls, name)
+            lines.add = visit_constructor(cls, name)
+            continue
 
     if '__hash__' in cls.__dict__:
         if cls.__hash__ is None:
@@ -161,8 +212,14 @@ def stubgen_class(cls, done=None):
 
         if name in special:
             done.add(name)
-            sig = special[name]
+            *args, retv, py = special[name]
+            sig = f"{name}({', '.join(args)}) -> {retv}"
+            if py is not None:
+                lines.add = f"if sys.version_info >= {py}:"
+                lines.level += 1
             lines.add = f"def {sig}: ..."
+            if py is not None:
+                lines.level -= 1
             continue
 
         attr = getattr(cls, name)
@@ -172,33 +229,34 @@ def stubgen_class(cls, done=None):
             if name == attr.__name__:
                 obj = dct[name]
                 if is_classmethod(obj):
-                    lines.add = f"@classmethod"
+                    lines.add = "@classmethod"
                 elif is_staticmethod(obj):
-                    lines.add = f"@staticmethod"
-                lines.add = stubgen_method(attr)
-            else:
+                    lines.add = "@staticmethod"
+                lines.add = visit_method(attr)
+            elif True:
                 lines.add = f"{name} = {attr.__name__}"
             continue
 
         if is_datadescr(attr):
             done.add(name)
-            lines.add = stubgen_datadescr(attr)
+            lines.add = visit_datadescr(attr)
             continue
 
         if is_property(attr):
             done.add(name)
-            lines.add = stubgen_property(attr, name)
+            lines.add = visit_property(attr, name)
             continue
 
     leftovers = [name for name in keys if
                  name not in done and name not in skip]
-    assert not leftovers, f"leftovers: {leftovers}"
+    if leftovers:
+        raise RuntimeError(f"leftovers: {leftovers}")
 
     lines.level -= 1
     return lines
 
 
-def stubgen_module(module, done=None):
+def visit_module(module, done=None):
     skip = {
         '__doc__',
         '__name__',
@@ -207,7 +265,6 @@ def stubgen_module(module, done=None):
         '__file__',
         '__package__',
         '__builtins__',
-        '__pyx_capi__',
     }
 
     done = set() if done is None else done
@@ -218,18 +275,17 @@ def stubgen_module(module, done=None):
 
     constants = [
         (name, getattr(module, name)) for name in keys
-        if (
-            name not in done and name not in skip and
-            isinstance(getattr(module, name), int)
-        )
+        if all((
+            name not in done and name not in skip,
+            isinstance(getattr(module, name), int),
+        ))
     ]
-    for attr in constants:
-        name, value = attr
+    for name, value in constants:
         done.add(name)
         if name in OVERRIDE:
             lines.add = OVERRIDE[name]
         else:
-            lines.add = stubgen_constant((name, value))
+            lines.add = visit_constant((name, value))
     if constants:
         lines.add = ""
 
@@ -240,18 +296,30 @@ def stubgen_module(module, done=None):
 
         if is_class(value):
             done.add(name)
-            lines.add = stubgen_class(value)
+            lines.add = visit_class(value)
             lines.add = ""
+            aliases = [
+                (k, getattr(module, k)) for k in keys
+                if all((
+                    k not in done and k not in skip,
+                    getattr(module, k) is value,
+                ))
+            ]
+            for aliasname, target in aliases:
+                done.add(aliasname)
+                lines.add = f"{aliasname} = {target.__name__}"
+            if aliases:
+                lines.add = ""
             instances = [
                 (k, getattr(module, k)) for k in keys
-                if (
-                    k not in done and k not in skip and
-                    type(getattr(module, k)) is value
-                )
+                if all((
+                    k not in done and k not in skip,
+                    type(getattr(module, k)) is value,
+                ))
             ]
             for attrname, attrvalue in instances:
                 done.add(attrname)
-                lines.add = stubgen_constant((attrname, attrvalue))
+                lines.add = visit_constant((attrname, attrvalue))
             if instances:
                 lines.add = ""
             continue
@@ -259,7 +327,7 @@ def stubgen_module(module, done=None):
         if is_function(value):
             done.add(name)
             if name == value.__name__:
-                lines.add = stubgen_function(value)
+                lines.add = visit_function(value)
             else:
                 lines.add = f"{name} = {value.__name__}"
             continue
@@ -273,26 +341,26 @@ def stubgen_module(module, done=None):
         if name in OVERRIDE:
             lines.add = OVERRIDE[name]
         else:
-            lines.add = stubgen_constant((name, value))
+            lines.add = visit_constant((name, value))
 
     leftovers = [name for name in keys if
                  name not in done and name not in skip]
-    assert not leftovers, f"leftovers: {leftovers}"
+    if leftovers:
+        raise RuntimeError(f"leftovers: {leftovers}")
     return lines
 
 
 IMPORTS = """
-from __future__ import annotations
 import sys
 from threading import Lock
-from typing import overload
 from typing import (
     Any,
-    Union,
-    Literal,
-    Optional,
-    NoReturn,
+    AnyStr,
     Final,
+    Literal,
+    NoReturn,
+    final,
+    overload,
 )
 if sys.version_info >= (3, 9):
     from collections.abc import (
@@ -303,11 +371,6 @@ if sys.version_info >= (3, 9):
         Sequence,
         Mapping,
     )
-    from builtins import (
-        tuple as Tuple,
-        list  as List,
-        dict  as Dict,
-    )
 else:
     from typing import (
         Callable,
@@ -317,59 +380,54 @@ else:
         Sequence,
         Mapping,
     )
-    from typing import (
-        Tuple as Tuple,
-        List  as List,
-        Dict  as Dict,
-    )
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
+from os import PathLike
 """
 
 OVERRIDE = {
-    'BOTTOM': """
-        class _Bottom(int): ...
-        Bottom = _Bottom
-        BOTTOM: Final[Bottom] = ...
-        """,
-    'IN_PLACE': """
-        class _InPlace(int): ...
-        InPlace = _InPlace
-        IN_PLACE: Final[InPlace] = ...
-        """,
     'Exception': {
-        '__init__': "def __init__(self, ierr: int = SUCCESS) -> None: ...",
-        "__lt__": "def __lt__(self, other: int) -> bool: ...",
-        "__le__": "def __le__(self, other: int) -> bool: ...",
-        "__gt__": "def __gt__(self, other: int) -> bool: ...",
-        "__ge__": "def __ge__(self, other: int) -> bool: ...",
+        '__new__': "def __new__(cls, ierr: int = SUCCESS) -> Self: ...",
+        "__lt__": "def __lt__(self, __other: int) -> bool: ...",
+        "__le__": "def __le__(self, __other: int) -> bool: ...",
+        "__gt__": "def __gt__(self, __other: int) -> bool: ...",
+        "__ge__": "def __ge__(self, __other: int) -> bool: ...",
     },
     'Info': {
-        '__iter__': "def __iter__(self) -> Iterator[str]: ...",
-        '__getitem__': "def __getitem__(self, item: str) -> str: ...",
-        '__setitem__': "def __setitem__(self, item: str, value: str) -> None: ...",
-        '__delitem__': "def __delitem__(self, item: str) -> None: ...",
-        '__contains__': "def __contains__(self, value: str) -> bool: ...",
+        '__iter__':
+        "def __iter__(self) -> Iterator[str]: ...",
+        '__getitem__':
+        "def __getitem__(self, __item: str) -> str: ...",
+        '__setitem__':
+        "def __setitem__(self, __item: str, __value: str) -> None: ...",
+        '__delitem__':
+        "def __delitem__(self, __item: str) -> None: ...",
+        '__contains__':
+        "def __contains__(self, __value: str) -> bool: ...",
     },
     'Op': {
         '__call__': "def __call__(self, x: Any, y: Any) -> Any: ...",
     },
-    'memory': {
+    'buffer': {
         '__new__': """
         @overload
-        def __new__(cls) -> memory: ...
+        def __new__(cls) -> Self: ...
         @overload
-        def __new__(cls, buf: Buffer, /) -> memory: ...
+        def __new__(cls, __buf: Buffer) -> Self: ...
         """,
         '__getitem__': """
         @overload
-        def __getitem__(self, item: int) -> int: ...
+        def __getitem__(self, __item: int) -> int: ...
         @overload
-        def __getitem__(self, item: slice) -> memory: ...
+        def __getitem__(self, __item: slice) -> buffer: ...
         """,
         '__setitem__': """
         @overload
-        def __setitem__(self, item: int, value: int) -> None: ...
+        def __setitem__(self, __item: int, __value: int) -> None: ...
         @overload
-        def __setitem__(self, item: slice, value: Buffer) -> None: ...
+        def __setitem__(self, __item: slice, __value: Buffer) -> None: ...
         """,
         '__delitem__': None,
     },
@@ -380,25 +438,37 @@ OVERRIDE = {
         def __init__(self,
             dumps: Callable[[Any, int], bytes],
             loads: Callable[[Buffer], Any],
-            protocol: Optional[int] = None,
+            protocol: int | None = None,
+            threshold: int | None = None,
         ) -> None: ...
         @overload
         def __init__(self,
-            dumps: Optional[Callable[[Any], bytes]] = None,
-            loads: Optional[Callable[[Buffer], Any]] = None,
+            dumps: Callable[[Any], bytes] | None = None,
+            loads: Callable[[Buffer], Any] | None = None,
         ) -> None: ...
         """,
     },
-    '_typedict':   "_typedict: Final[Dict[str, Datatype]] = ...",
-    '_typedict_c': "_typedict_c: Final[Dict[str, Datatype]] = ...",
-    '_typedict_f': "_typedict_f: Final[Dict[str, Datatype]] = ...",
+    '__pyx_capi__': "__pyx_capi__: Final[dict[str, Any]] = ...",
+    '_typedict': "_typedict: Final[dict[str, Datatype]] = ...",
+    '_typedict_c': "_typedict_c: Final[dict[str, Datatype]] = ...",
+    '_typedict_f': "_typedict_f: Final[dict[str, Datatype]] = ...",
     '_keyval_registry': None,
 }
 OVERRIDE.update({
     subtype: {
-        '__new__': """
-        def __new__(cls, {}: Optional[{}] = None) -> {}: ...
-        """.format(basetype.lower(), basetype, subtype)
+        '__new__': "def __new__(cls) -> Self: ...",
+    }
+    for subtype in (
+        'BottomType',
+        'InPlaceType',
+        'BufferAutomaticType',
+    )
+})
+OVERRIDE.update({
+    subtype: {
+        '__new__': str.format("""
+        def __new__(cls, {}: {} | None = None) -> Self: ...
+        """, basetype.lower(), basetype)
     }
     for basetype, subtype in (
         ('Comm', 'Comm'),
@@ -413,85 +483,51 @@ OVERRIDE.update({
         ('Request', 'Grequest'),
     )
 })
+OVERRIDE.update({  # python/mypy#15717
+    'Group': {
+        'Intersect': """
+        @classmethod  # python/mypy#15717
+        def Intersect(cls, group1: Group, group2: Group) -> Self: ...
+        """
+    }
+})
 
-bufspec = """
-Buffer = Any  # TODO
-
-Count = int
-Displ = int
-TypeSpec = Union[Datatype, str]
-
-BufSpec = Union[
+TYPING = """
+from .typing import (  # noqa: E402
     Buffer,
-    Tuple[Buffer, Count],            # (buffer, count)
-    Tuple[Buffer, TypeSpec],         # (buffer, datatype)
-    Tuple[Buffer, Count, TypeSpec],  # (buffer, count, datatype)
-    Tuple[Bottom, Count, Datatype],  # (BOTTOM, count, datatype)
-    List,                            # (buffer, count, datatype)
-]
-
-BufSpecB = Union[
-    Buffer,
-    Tuple[Buffer, TypeSpec],         # (buffer, datatype)
-    Tuple[Buffer, Count, TypeSpec],  # (buffer, count, datatype)
-    List,                            # (buffer, count, datatype)
-]
-
-BufSpecV = Union[
-    Buffer,
-    Tuple[Buffer, Sequence[Count]],                                    # (buffer, counts)
-    Tuple[Buffer, Tuple[Sequence[Count], Sequence[Displ]]],            # (buffer, (counts, displs))
-    Tuple[Buffer, TypeSpec],                                           # (buffer, datatype)
-    Tuple[Buffer, Sequence[Count], TypeSpec],                          # (buffer, counts, datatype)
-    Tuple[Buffer, Tuple[Sequence[Count], Sequence[Displ]], TypeSpec],  # (buffer, (counts, displs), datatype)
-    Tuple[Buffer, Sequence[Count], Sequence[Displ], TypeSpec],         # (buffer, counts, displs, datatype)
-    Tuple[Bottom, Tuple[Sequence[Count], Sequence[Displ]], Datatype],  # (BOTTOM, (counts, displs), datatype)
-    Tuple[Bottom, Sequence[Count], Sequence[Displ], Datatype],         # (BOTTOM, counts, displs, datatype)
-    List,                                                              # (buffer, counts, displs, datatypes)
-]
-
-BufSpecW = Union[
-    Tuple[Buffer, Sequence[Datatype]],                                           # (buffer, datatypes)
-    Tuple[Buffer, Tuple[Sequence[Count], Sequence[Displ]], Sequence[Datatype]],  # (buffer, (counts, displs), datatypes)
-    Tuple[Buffer, Sequence[Count], Sequence[Displ], Sequence[Datatype]],         # (buffer, counts, displs, datatypes)
-    Tuple[Bottom, Tuple[Sequence[Count], Sequence[Displ]], Sequence[Datatype]],  # (BOTTOM, (counts, displs), datatypes)
-    Tuple[Bottom, Sequence[Count], Sequence[Displ], Sequence[Datatype]],         # (BOTTOM, counts, displs, datatypes)
-    List,                                                                        # (buffer, counts, displs, datatypes)
-]
-
-TargetSpec = Union[
-    Displ,                          # displ
-    Tuple[()],                      # ()
-    Tuple[Displ],                   # (displ,)
-    Tuple[Displ, Count],            # (displ, count)
-    Tuple[Displ, Count, Datatype],  # (displ, count, datatype)
-    List,                           # (displ, count, datatype)
-]
+    Bottom,
+    InPlace,
+    BufSpec,
+    BufSpecB,
+    BufSpecV,
+    BufSpecW,
+    TargetSpec,
+)
 """
 
-def stubgen_mpi4py_MPI(done=None):
-    from mpi4py import MPI
 
+def visit_mpi4py_MPI():
+    from mpi4py import MPI as module
     lines = Lines()
-
     lines.add = IMPORTS
-
     lines.add = ""
-    lines.add = stubgen_module(MPI)
-
+    lines.add = visit_module(module)
     lines.add = ""
-    lines.add = bufspec
-
+    lines.add = TYPING
     return lines
 
 
-def main():
-    import sys, os
-    output = os.path.join('src', 'mpi4py', 'MPI.pyi')
-    with open(output, 'w') as f:
-        for line in stubgen_mpi4py_MPI():
+def generate(filename):
+    dirname = os.path.dirname(filename)
+    os.makedirs(dirname, exist_ok=True)
+    with open(filename, 'w') as f:
+        script = os.path.basename(__file__)
+        print(f"# Generated with `python conf/{script}`", file=f)
+        for line in visit_mpi4py_MPI():
             print(line, file=f)
 
 
+OUTDIR = os.path.join('src', 'mpi4py')
+
 if __name__ == '__main__':
-    main()
+    generate(os.path.join(OUTDIR, 'MPI.pyi'))

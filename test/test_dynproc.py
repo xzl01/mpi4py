@@ -1,10 +1,14 @@
 from mpi4py import MPI
 import mpiunittest as unittest
+import os
 try:
     import socket
 except ImportError:
     socket = None
 
+
+def github():
+    return os.environ.get('GITHUB_ACTIONS') == 'true'
 
 def ch4_ucx():
     return 'ch4:ucx' in MPI.Get_library_version()
@@ -26,10 +30,12 @@ def badport():
         port = ""
     return port == ""
 
-@unittest.skipMPI('mpich', badport())
+@unittest.skipMPI('mpich(<4.3.0)', badport())
 @unittest.skipMPI('openmpi(<2.0.0)')
-@unittest.skipMPI('MVAPICH2')
+@unittest.skipMPI('openmpi(>=5.0.0,<5.0.4)')
 @unittest.skipMPI('msmpi(<8.1.0)')
+@unittest.skipMPI('mvapich(<3.0.0)')
+@unittest.skipIf(MPI.COMM_WORLD.Get_size() < 2, 'mpi-world-size<2')
 class TestDPM(unittest.TestCase):
 
     message = [
@@ -45,14 +51,9 @@ class TestDPM(unittest.TestCase):
         {1:2},
     ]
 
-    @unittest.skipMPI('mpich', appnum() is None)
-    @unittest.skipMPI('MPICH2', appnum() is None)
-    @unittest.skipMPI('MPICH1', appnum() is None)
-    @unittest.skipMPI('msmpi(<8.1.0)', appnum() is None)
-    @unittest.skipMPI('PlatformMPI')
     def testNamePublishing(self):
         rank = MPI.COMM_WORLD.Get_rank()
-        service = "mpi4py-%d" % rank
+        service = f"mpi4py-{rank}"
         port = MPI.Open_port()
         MPI.Publish_name(service, port)
         found =  MPI.Lookup_name(service)
@@ -60,12 +61,12 @@ class TestDPM(unittest.TestCase):
         MPI.Unpublish_name(service, port)
         MPI.Close_port(port)
 
-    @unittest.skipIf(MPI.COMM_WORLD.Get_size() < 2, 'mpi-world-size<2')
     @unittest.skipMPI('mpich(==3.4.1)', ch4_ofi())
+    @unittest.skipMPI('mvapich', ch4_ofi())
+    @unittest.skipMPI('impi', MPI.COMM_WORLD.Get_size() > 2)
     def testAcceptConnect(self):
         comm_self  = MPI.COMM_SELF
         comm_world = MPI.COMM_WORLD
-        wsize = comm_world.Get_size()
         wrank = comm_world.Get_rank()
         group_world = comm_world.Get_group()
         group = group_world.Excl([0])
@@ -104,16 +105,14 @@ class TestDPM(unittest.TestCase):
             root = 0
         message = intercomm.bcast(message, root)
         if wrank == 0:
-            self.assertEqual(message, None)
+            self.assertIsNone(message)
         else:
             self.assertEqual(message, TestDPM.message)
         intercomm.Free()
 
-    @unittest.skipIf(MPI.COMM_WORLD.Get_size() < 2, 'mpi-world-size<2')
     def testConnectAccept(self):
         comm_self  = MPI.COMM_SELF
         comm_world = MPI.COMM_WORLD
-        wsize = comm_world.Get_size()
         wrank = comm_world.Get_rank()
         group_world = comm_world.Get_group()
         group = group_world.Excl([0])
@@ -153,38 +152,38 @@ class TestDPM(unittest.TestCase):
             root = 0
         message = intercomm.bcast(message, root)
         if wrank == 0:
-            self.assertEqual(message, None)
+            self.assertIsNone(message)
         else:
             self.assertEqual(message, TestDPM.message)
         intercomm.Free()
 
-    @unittest.skipIf(MPI.COMM_WORLD.Get_size() < 2, 'mpi-world-size<2')
     @unittest.skipIf(socket is None, 'socket')
     def testJoin(self):
         size = MPI.COMM_WORLD.Get_size()
         rank = MPI.COMM_WORLD.Get_rank()
         server = client = address = None
         host = socket.gethostname()
-        addresses = socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)
-        address_families = [ a[0] for a in addresses ]
+        addrinfo = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        addr_families = [info[0] for info in addrinfo]
         # if both INET and INET6 are available, don't assume the order
-        # is the same on both server and client. Select INET if available.
-        if socket.AF_INET in address_families:
-            socket_family = socket.AF_INET
-        elif socket.AF_INET6 in address_families:
-            socket_family = socket.AF_INET6
-        elif address_families:
-            # allow for AF_UNIX (or other families)
-            socket_family = address_families[0]
-        else:
-            self.skipTest("socket")
+        # is the same on both server and client. Prefer INET if available.
+        addr_family = None
+        if socket.AF_INET in addr_families:
+            addr_family = socket.AF_INET
+        elif socket.AF_INET6 in addr_families:
+            addr_family = socket.AF_INET6
+        addr_family = MPI.COMM_WORLD.bcast(addr_family, root=0)
+        supported = (addr_family in addr_families)
+        supported = MPI.COMM_WORLD.allreduce(supported, op=MPI.LAND)
+        if not supported:
+            self.skipTest("socket-inet")
         # create server/client sockets
         if rank == 0: # server
-            server = socket.socket(socket_family, socket.SOCK_STREAM)
+            server = socket.socket(addr_family, socket.SOCK_STREAM)
             server.bind((host, 0))
             server.listen(0)
         if rank == 1: # client
-            client = socket.socket(socket_family, socket.SOCK_STREAM)
+            client = socket.socket(addr_family, socket.SOCK_STREAM)
         # communicate address
         if rank == 0:
             address = server.getsockname()
@@ -201,7 +200,7 @@ class TestDPM(unittest.TestCase):
             try:
                 client.connect(address)
                 connected = True
-            except socket.error:
+            except OSError:
                 raise
         connected = MPI.COMM_WORLD.bcast(connected, root=1)
         # test Comm.Join()
@@ -222,18 +221,11 @@ class TestDPM(unittest.TestCase):
                     root = 0
                 message = intercomm.bcast(message, root)
                 if rank == 0:
-                    self.assertEqual(message, None)
+                    self.assertIsNone(message)
                 else:
                     self.assertEqual(message, TestDPM.message)
                 intercomm.Free()
         MPI.COMM_WORLD.Barrier()
-
-
-MVAPICH2 = MPI.get_vendor()[0] == 'MVAPICH2'
-try:
-    if MVAPICH2: raise NotImplementedError
-except NotImplementedError:
-    unittest.disable(TestDPM, 'mpi-dpm')
 
 
 if __name__ == '__main__':

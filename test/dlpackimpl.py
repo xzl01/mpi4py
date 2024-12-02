@@ -1,11 +1,15 @@
 import sys
 import ctypes
-try:
-    from enum import IntEnum
-except ImportError:
-    IntEnum = object
+from enum import IntEnum
+
 if hasattr(sys, 'pypy_version_info'):
     raise ImportError("unsupported on PyPy")
+
+class DLPackVersion(ctypes.Structure):
+  _fields_ = [
+      ("major", ctypes.c_uint32),
+      ("minor", ctypes.c_uint32),
+  ]
 
 class DLDeviceType(IntEnum):
     kDLCPU = 1
@@ -19,11 +23,14 @@ class DLDeviceType(IntEnum):
     kDLROCMHost = 11
     kDLExtDev = 12
     kDLCUDAManaged = 13
+    kDLOneAPI = 14
+    kDLWebGPU = 15
+    kDLHexagon = 16
 
 class DLDevice(ctypes.Structure):
   _fields_ = [
       ("device_type", ctypes.c_uint),
-      ("device_id", ctypes.c_int),
+      ("device_id", ctypes.c_int32),
   ]
 
 class DLDataTypeCode(IntEnum):
@@ -33,6 +40,7 @@ class DLDataTypeCode(IntEnum):
     kDLOpaqueHandle = 3
     kDLBfloat = 4
     kDLComplex = 5
+    kDLBool = 6
 
 class DLDataType(ctypes.Structure):
   _fields_ = [
@@ -45,7 +53,7 @@ class DLTensor(ctypes.Structure):
   _fields_ = [
       ("data", ctypes.c_void_p),
       ("device", DLDevice),
-      ("ndim", ctypes.c_int),
+      ("ndim", ctypes.c_int32),
       ("dtype", DLDataType),
       ("shape", ctypes.POINTER(ctypes.c_int64)),
       ("strides", ctypes.POINTER(ctypes.c_int64)),
@@ -61,9 +69,24 @@ class DLManagedTensor(ctypes.Structure):
     ("deleter", DLManagedTensorDeleter),
 ]
 
+DLPACK_FLAG_BITMASK_READ_ONLY = 1 << 0
+DLPACK_FLAG_BITMASK_IS_COPIED = 1 << 1
+
+DLManagedTensorVersionedDeleter = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+
+class DLManagedTensorVersioned(ctypes.Structure):
+    _fields_ = [
+    ("version", DLPackVersion),
+    ("manager_ctx", ctypes.c_void_p),
+    ("deleter", DLManagedTensorDeleter),
+    ("flags", ctypes.c_uint64),
+    ("dl_tensor", DLTensor),
+]
+
 pyapi = ctypes.pythonapi
 
 DLManagedTensor_p = ctypes.POINTER(DLManagedTensor)
+DLManagedTensorVersioned_p = ctypes.POINTER(DLManagedTensorVersioned)
 
 Py_IncRef = pyapi.Py_IncRef
 Py_IncRef.restype = None
@@ -96,10 +119,19 @@ PyCapsule_GetContext.restype = ctypes.c_void_p
 PyCapsule_GetContext.argtypes = [ctypes.py_object]
 
 
+def make_dl_version(major, minor):
+    version = DLPackVersion()
+    version.major = major
+    version.minor = minor
+    return version
+
+
 def make_dl_datatype(typecode, itemsize):
     code = None
     bits = itemsize * 8
     lanes = 1
+    if typecode in "?":
+        code = DLDataTypeCode.kDLBool
     if typecode in "bhilqnp":
         code = DLDataTypeCode.kDLInt
     if typecode in "BHILQNP":
@@ -191,11 +223,27 @@ def dl_managed_tensor_deleter(void_p):
     if False: Py_DecRef(py_obj)
 
 
-def make_dl_managed_tensor(obj):
-    managed = DLManagedTensor()
-    managed.dl_tensor = make_dl_tensor(obj)
-    managed.manager_ctx = make_dl_manager_ctx(obj)
-    managed.deleter = dl_managed_tensor_deleter
+@DLManagedTensorVersionedDeleter
+def dl_managed_tensor_versioned_deleter(void_p):
+    managed = ctypes.cast(void_p, DLManagedTensorVersioned_p)
+    manager_ctx = managed.contents.manager_ctx
+    py_obj = ctypes.cast(manager_ctx, ctypes.py_object)
+    if False: Py_DecRef(py_obj)
+
+
+def make_dl_managed_tensor(obj, versioned=False):
+    if versioned:
+        managed = DLManagedTensorVersioned()
+        managed.version = make_dl_version(1, 0)
+        managed.manager_ctx = make_dl_manager_ctx(obj)
+        managed.deleter = dl_managed_tensor_versioned_deleter
+        managed.flags = 0
+        managed.dl_tensor = make_dl_tensor(obj)
+    else:
+        managed = DLManagedTensor()
+        managed.dl_tensor = make_dl_tensor(obj)
+        managed.manager_ctx = make_dl_manager_ctx(obj)
+        managed.deleter = dl_managed_tensor_deleter
     return managed
 
 
@@ -209,22 +257,33 @@ def make_py_context(context):
 @PyCapsule_Destructor
 def py_capsule_destructor(void_p):
     capsule = ctypes.cast(void_p, ctypes.py_object)
-    if PyCapsule_IsValid(capsule, b"dltensor"):
-        pointer = PyCapsule_GetPointer(capsule, b"dltensor")
-        managed = ctypes.cast(pointer, DLManagedTensor_p)
-        deleter = managed.contents.deleter
-        if deleter:
-            deleter(managed)
+    for py_capsule_name, dl_managed_tensor_type_p in (
+        (b"dltensor_versioned", DLManagedTensorVersioned_p),
+        (b"dltensor", DLManagedTensor_p),
+    ):
+        if PyCapsule_IsValid(capsule, py_capsule_name):
+            pointer = PyCapsule_GetPointer(capsule, py_capsule_name)
+            managed = ctypes.cast(pointer, dl_managed_tensor_type_p)
+            deleter = managed.contents.deleter
+            if deleter:
+                deleter(managed)
+            break
     context = PyCapsule_GetContext(capsule)
     managed = ctypes.cast(context, ctypes.py_object)
     Py_DecRef(managed)
 
 
-def make_py_capsule(managed):
-    if not isinstance(managed, DLManagedTensor):
-        managed = make_dl_managed_tensor(managed)
+def make_py_capsule(managed, versioned=False):
+    if versioned >= 1:
+        py_capsule_name = b"dltensor_versioned"
+        if not isinstance(managed, DLManagedTensorVersioned):
+            managed = make_dl_managed_tensor_versioned(managed)
+    else:
+        py_capsule_name = b"dltensor"
+        if not isinstance(managed, DLManagedTensor):
+            managed = make_dl_managed_tensor(managed)
     pointer = ctypes.pointer(managed)
-    capsule = PyCapsule_New(pointer, b"dltensor", py_capsule_destructor)
+    capsule = PyCapsule_New(pointer, py_capsule_name, py_capsule_destructor)
     context = make_py_context(managed)
     PyCapsule_SetContext(capsule, context)
     return capsule

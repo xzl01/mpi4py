@@ -1,37 +1,40 @@
 from mpi4py import MPI
 import mpiunittest as unittest
-import sys
 
 # ---
 
-class MyBaseComm(object):
+class MyBaseComm:
 
     def free(self):
         if self != MPI.COMM_NULL:
             MPI.Comm.Free(self)
 
-class BaseTestBaseComm(object):
+class BaseTestBaseComm:
 
     def setUp(self):
         self.comm = self.CommType(self.COMM_BASE)
 
     def testSubType(self):
-        self.assertTrue(type(self.comm) not in [
+        self.assertNotIn(
+            type(self.comm),
+            [
                 MPI.Comm,
                 MPI.Intracomm,
                 MPI.Cartcomm,
                 MPI.Graphcomm,
                 MPI.Distgraphcomm,
-                MPI.Intercomm])
-        self.assertTrue(isinstance(self.comm, self.CommType))
+                MPI.Intercomm,
+            ]
+        )
+        self.assertIsInstance(self.comm, self.CommType)
 
     def testCloneFree(self):
         if self.COMM_BASE != MPI.COMM_NULL:
             comm = self.comm.Clone()
         else:
             comm = self.CommType()
-        self.assertTrue(isinstance(comm, MPI.Comm))
-        self.assertTrue(isinstance(comm, self.CommType))
+        self.assertIsInstance(comm, MPI.Comm)
+        self.assertIsInstance(comm, self.CommType)
         comm.free()
 
     def tearDown(self):
@@ -45,7 +48,7 @@ class MyComm(MPI.Comm, MyBaseComm):
         if comm is not None:
             if comm != MPI.COMM_NULL:
                 comm = comm.Clone()
-        return super(MyComm, cls).__new__(cls, comm)
+        return super().__new__(cls, comm)
 
 class BaseTestMyComm(BaseTestBaseComm):
     CommType = MyComm
@@ -67,7 +70,7 @@ class MyIntracomm(MPI.Intracomm, MyBaseComm):
         if comm is not None:
             if comm != MPI.COMM_NULL:
                 comm = comm.Dup()
-        return super(MyIntracomm, cls).__new__(cls, comm)
+        return super().__new__(cls, comm)
 
 class BaseTestMyIntracomm(BaseTestBaseComm):
     CommType = MyIntracomm
@@ -90,7 +93,7 @@ class MyCartcomm(MPI.Cartcomm, MyBaseComm):
             if comm != MPI.COMM_NULL:
                 dims = [comm.size]
                 comm = comm.Create_cart(dims)
-        return super(MyCartcomm, cls).__new__(cls, comm)
+        return super().__new__(cls, comm)
 
 class BaseTestMyCartcomm(BaseTestBaseComm):
     CommType = MyCartcomm
@@ -114,7 +117,7 @@ class MyGraphcomm(MPI.Graphcomm, MyBaseComm):
                 index = list(range(0, comm.size+1))
                 edges = list(range(0, comm.size))
                 comm = comm.Create_graph(index, edges)
-        return super(MyGraphcomm, cls).__new__(cls, comm)
+        return super().__new__(cls, comm)
 
 class BaseTestMyGraphcomm(BaseTestBaseComm):
     CommType = MyGraphcomm
@@ -132,7 +135,7 @@ class TestMyGraphcommWORLD(BaseTestMyGraphcomm, unittest.TestCase):
 
 class MyRequest(MPI.Request):
     def __new__(cls, request=None):
-        return super(MyRequest, cls).__new__(cls, request)
+        return super().__new__(cls, request)
     def test(self):
         return super(type(self), self).Test()
     def wait(self):
@@ -140,7 +143,7 @@ class MyRequest(MPI.Request):
 
 class MyPrequest(MPI.Prequest):
     def __new__(cls, request=None):
-        return super(MyPrequest, cls).__new__(cls, request)
+        return super().__new__(cls, request)
     def test(self):
         return super(type(self), self).Test()
     def wait(self):
@@ -150,21 +153,21 @@ class MyPrequest(MPI.Prequest):
 
 class MyGrequest(MPI.Grequest):
     def __new__(cls, request=None):
-        return super(MyGrequest, cls).__new__(cls, request)
+        return super().__new__(cls, request)
     def test(self):
         return super(type(self), self).Test()
     def wait(self):
         return super(type(self), self).Wait()
 
-class BaseTestMyRequest(object):
+class BaseTestMyRequest:
 
     def setUp(self):
         self.req = self.MyRequestType(MPI.REQUEST_NULL)
 
     def testSubType(self):
-        self.assertTrue(type(self.req) is not self.MPIRequestType)
-        self.assertTrue(isinstance(self.req, self.MPIRequestType))
-        self.assertTrue(isinstance(self.req, self.MyRequestType))
+        self.assertIsNot(type(self.req), self.MPIRequestType)
+        self.assertIsInstance(self.req, self.MPIRequestType)
+        self.assertIsInstance(self.req, self.MyRequestType)
         self.req.test()
 
 class TestMyRequest(BaseTestMyRequest, unittest.TestCase):
@@ -208,6 +211,74 @@ class TestMyPrequest2(TestMyPrequest):
 
 # ---
 
+class MyInfo(MPI.Info):
+
+    def __new__(cls, info=None):
+        return MPI.Info.__new__(cls, info)
+
+    def free(self):
+        if self != MPI.INFO_NULL:
+            MPI.Info.Free(self)
+
+class BaseTestMyInfo:
+
+    def setUp(self):
+        info = MPI.Info.Create()
+        self.info = MyInfo(info)
+
+    def tearDown(self):
+        self.info.free()
+
+    def testSubType(self):
+        self.assertIsNot(type(self.info), MPI.Info)
+        self.assertIsInstance(self.info, MPI.Info)
+        self.assertIsInstance(self.info, MyInfo)
+
+    def testFree(self):
+        self.assertTrue(self.info)
+        self.info.free()
+        self.assertFalse(self.info)
+
+    def testCreateDupType(self):
+        for info in (
+            MyInfo.Create(),
+            self.info.Dup(),
+            self.info.copy(),
+        ):
+            self.assertIsNot(type(info), MPI.Info)
+            self.assertIsInstance(info, MPI.Info)
+            self.assertIsInstance(info, MyInfo)
+            info.free()
+
+    def testCreateEnvType(self):
+        try:
+            info = MyInfo.Create_env()
+        except NotImplementedError:
+            if MPI.Get_version() >= (4, 0): raise
+            raise unittest.SkipTest("mpi-info-create-env")
+        self.assertIsNot(type(info), MPI.Info)
+        self.assertIsInstance(info, MPI.Info)
+        self.assertIsInstance(info, MyInfo)
+
+    def testPickle(self):
+        from pickle import dumps, loads
+        items = list(zip("abc", "123"))
+        self.info.update(items)
+        info = loads(dumps(self.info))
+        self.assertIs(type(info), MyInfo)
+        self.assertEqual(info.items(), items)
+        info.free()
+
+class TestMyInfo(BaseTestMyInfo, unittest.TestCase):
+    pass
+
+try:
+    MPI.Info.Create().Free()
+except (NotImplementedError, MPI.Exception):
+    unittest.disable(BaseTestMyInfo, 'mpi-info')
+
+# ---
+
 class MyWin(MPI.Win):
 
     def __new__(cls, win=None):
@@ -217,7 +288,7 @@ class MyWin(MPI.Win):
         if self != MPI.WIN_NULL:
             MPI.Win.Free(self)
 
-class BaseTestMyWin(object):
+class BaseTestMyWin:
 
     def setUp(self):
         w = MPI.Win.Create(MPI.BOTTOM)
@@ -227,9 +298,9 @@ class BaseTestMyWin(object):
         self.win.free()
 
     def testSubType(self):
-        self.assertTrue(type(self.win) is not MPI.Win)
-        self.assertTrue(isinstance(self.win, MPI.Win))
-        self.assertTrue(isinstance(self.win, MyWin))
+        self.assertIsNot(type(self.win), MPI.Win)
+        self.assertIsInstance(self.win, MPI.Win)
+        self.assertIsInstance(self.win, MyWin)
 
     def testFree(self):
         self.assertTrue(self.win)
@@ -239,9 +310,7 @@ class BaseTestMyWin(object):
 class TestMyWin(BaseTestMyWin, unittest.TestCase):
     pass
 
-SpectrumMPI = MPI.get_vendor()[0] == 'Spectrum MPI'
 try:
-    if SpectrumMPI: raise NotImplementedError
     MPI.Win.Create(MPI.BOTTOM).Free()
 except (NotImplementedError, MPI.Exception):
     unittest.disable(BaseTestMyWin, 'mpi-win')
@@ -260,7 +329,7 @@ class MyFile(MPI.File):
             MPI.File.Close(self)
 
 
-class BaseTestMyFile(object):
+class BaseTestMyFile:
 
     def openfile(self):
         fd, fname = tempfile.mkstemp(prefix='mpi4py')
@@ -281,9 +350,9 @@ class BaseTestMyFile(object):
         self.file.close()
 
     def testSubType(self):
-        self.assertTrue(type(self.file) is not MPI.File)
-        self.assertTrue(isinstance(self.file, MPI.File))
-        self.assertTrue(isinstance(self.file, MyFile))
+        self.assertIsNot(type(self.file), MPI.File)
+        self.assertIsInstance(self.file, MPI.File)
+        self.assertIsInstance(self.file, MyFile)
 
     def testFree(self):
         self.assertTrue(self.file)
@@ -299,6 +368,7 @@ try:
 except NotImplementedError:
     unittest.disable(BaseTestMyFile, 'mpi-file')
 
+# ---
 
 if __name__ == '__main__':
     unittest.main()

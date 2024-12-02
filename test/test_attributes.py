@@ -1,12 +1,13 @@
 from mpi4py import MPI
 import mpiunittest as unittest
+
 try:
     import array
 except ImportError:
     array = None
 
 
-class BaseTestAttr(object):
+class BaseTestAttr:
 
     keyval = MPI.KEYVAL_INVALID
 
@@ -22,22 +23,22 @@ class BaseTestAttr(object):
         self.keyval = cls.Create_keyval(copy_fn, delete_fn)
         self.assertNotEqual(self.keyval, MPI.KEYVAL_INVALID)
         attr = obj.Get_attr(self.keyval)
-        self.assertEqual(attr, None)
+        self.assertIsNone(attr)
         attrval = [1,2,3]
         obj.Set_attr(self.keyval, attrval)
         attr = obj.Get_attr(self.keyval)
-        self.assertTrue(attr is attrval)
+        self.assertIs(attr, attrval)
         if hasattr(obj, 'Dup'):
             dup = obj.Dup()
             attr = dup.Get_attr(self.keyval)
             if copy_fn is True:
-                self.assertTrue(attr is attrval)
+                self.assertIs(attr, attrval)
             elif not copy_fn:
-                self.assertTrue(attr is None)
+                self.assertIsNone(attr)
             dup.Free()
         obj.Delete_attr(self.keyval)
         attr = obj.Get_attr(self.keyval)
-        self.assertTrue(attr is None)
+        self.assertIsNone(attr)
 
     def testAttrCopyFalse(self):
         self.testAttr(False)
@@ -54,19 +55,19 @@ class BaseTestAttr(object):
         self.keyval = cls.Create_keyval(copy_fn, None)
         self.assertNotEqual(self.keyval, MPI.KEYVAL_INVALID)
         attr = obj.Get_attr(self.keyval)
-        self.assertEqual(attr, None)
+        self.assertIsNone(attr)
         attrval = [1,2,3]
         obj.Set_attr(self.keyval, attrval)
         attr = obj.Get_attr(self.keyval)
-        self.assertTrue(attr is attrval)
+        self.assertIs(attr, attrval)
         if hasattr(obj, 'Dup'):
             dup = obj.Dup()
             attr = dup.Get_attr(self.keyval)
-            self.assertTrue(attr is None)
+            self.assertIsNone(attr)
             dup.Free()
         obj.Delete_attr(self.keyval)
         attr = obj.Get_attr(self.keyval)
-        self.assertTrue(attr is None)
+        self.assertIsNone(attr)
 
     def testAttrNoPython(self, intval=123456789):
         cls, obj = type(self.obj), self.obj
@@ -80,7 +81,7 @@ class BaseTestAttr(object):
         self.keyval = cls.Create_keyval(copy_fn, del_fn, nopython=True)
         self.assertNotEqual(self.keyval, MPI.KEYVAL_INVALID)
         attr = obj.Get_attr(self.keyval)
-        self.assertEqual(attr, None)
+        self.assertIsNone(attr)
         obj.Set_attr(self.keyval, intval)
         attr = obj.Get_attr(self.keyval)
         self.assertEqual(attr, intval)
@@ -91,7 +92,7 @@ class BaseTestAttr(object):
             dup.Free()
         obj.Delete_attr(self.keyval)
         attr = obj.Get_attr(self.keyval)
-        self.assertTrue(attr is None)
+        self.assertIsNone(attr)
 
     @unittest.skipMPI('openmpi(<=1.10.2)')
     def testAttrNoPythonZero(self):
@@ -108,6 +109,49 @@ class BaseTestAttr(object):
         #
         attr = obj.Get_attr(self.keyval)
         self.assertEqual(attr, addr)
+
+    @unittest.skipMPI('impi')
+    @unittest.skipMPI('mvapich')
+    @unittest.skipMPI('mpich(<4.2.1)')
+    @unittest.skipMPI('openmpi(<5.0.0)')
+    def testAttrCopyException(self):
+        cls, obj = type(self.obj), self.obj
+        if not isinstance(obj, MPI.Datatype): return
+        if not hasattr(cls, 'Dup'): return
+        def copy_fn(o, k, v):
+            raise ValueError
+        self.keyval = cls.Create_keyval(copy_fn, None)
+        try:
+            obj.Set_attr(self.keyval, "value")
+            with self.assertRaises(MPI.Exception) as exc_cm:
+                with unittest.capture_stderr() as stderr:
+                    obj.Dup().Free()
+            ierr = exc_cm.exception.Get_error_class()
+            self.assertEqual(ierr, MPI.ERR_OTHER)
+            self.assertIn('ValueError', stderr.getvalue())
+        finally:
+            obj.Delete_attr(self.keyval)
+            self.keyval = cls.Free_keyval(self.keyval)
+
+    @unittest.skipMPI('impi')
+    @unittest.skipMPI('mvapich')
+    @unittest.skipMPI('mpich(<4.2.1)')
+    def testAttrDeleteException(self):
+        cls, obj = type(self.obj), self.obj
+        raise_flag = True
+        def delete_fn(o, k, v):
+            raise ValueError
+        self.keyval = cls.Create_keyval(None, delete_fn)
+        obj.Set_attr(self.keyval, "value")
+        try:
+            with self.assertRaises(MPI.Exception) as exc_cm:
+                with unittest.capture_stderr() as stderr:
+                    obj.Delete_attr(self.keyval)
+            ierr = exc_cm.exception.Get_error_class()
+            self.assertEqual(ierr, MPI.ERR_OTHER)
+            self.assertIn('ValueError', stderr.getvalue())
+        finally:
+            self.keyval = cls.Free_keyval(self.keyval)
 
 
 class BaseTestCommAttr(BaseTestAttr):
@@ -126,14 +170,14 @@ class BaseTestCommAttr(BaseTestAttr):
         obj1 = obj
         dup1 = obj1.Dup()
         obj1.Set_attr(self.keyval, dup1)
-        self.assertTrue(dup1 != null)
+        self.assertNotEqual(dup1, null)
         obj2 = obj1.Dup()
         dup2 = obj2.Get_attr(self.keyval)
-        self.assertTrue(dup1 != dup2)
+        self.assertNotEqual(dup1, dup2)
         obj2.Free()
-        self.assertTrue(dup2 == null)
+        self.assertEqual(dup2, null)
         self.obj.Delete_attr(self.keyval)
-        self.assertTrue(dup1 == null)
+        self.assertEqual(dup1, null)
 
 class TestCommAttrWorld(BaseTestCommAttr, unittest.TestCase):
     def setUp(self):
@@ -158,14 +202,14 @@ class BaseTestDatatypeAttr(BaseTestAttr):
         obj1 = obj
         dup1 = obj1.Dup()
         obj1.Set_attr(self.keyval, dup1)
-        self.assertTrue(dup1 != null)
+        self.assertNotEqual(dup1, null)
         obj2 = obj1.Dup()
         dup2 = obj2.Get_attr(self.keyval)
-        self.assertTrue(dup1 != dup2)
+        self.assertNotEqual(dup1, dup2)
         obj2.Free()
-        self.assertTrue(dup2 == null)
+        self.assertEqual(dup2, null)
         self.obj.Delete_attr(self.keyval)
-        self.assertTrue(dup1 == null)
+        self.assertEqual(dup1, null)
 
 class TestDatatypeAttrBYTE(BaseTestDatatypeAttr, unittest.TestCase):
     def setUp(self):
@@ -188,7 +232,6 @@ class TestWinAttr(BaseTestAttr, unittest.TestCase):
         self.obj = self.win = win
 
     @unittest.skipMPI('openmpi(<=1.5.1)')
-    @unittest.skipMPI('PlatformMPI')
     def testAttrCopyDelete(self):
         #
         null = self.NULL
@@ -200,12 +243,11 @@ class TestWinAttr(BaseTestAttr, unittest.TestCase):
         self.keyval = MPI.Win.Create_keyval(delete_fn=delete_fn)
         self.assertNotEqual(self.keyval, MPI.KEYVAL_INVALID)
         #
-        win = MPI.Win.Create(MPI.BOTTOM, 1,
-                             MPI.INFO_NULL, MPI.COMM_SELF)
+        win = MPI.Win.Create(MPI.BOTTOM, 1, MPI.INFO_NULL, MPI.COMM_SELF)
         self.obj.Set_attr(self.keyval, win)
-        self.assertTrue(win != null)
+        self.assertNotEqual(win, null)
         self.obj.Delete_attr(self.keyval)
-        self.assertTrue(win == null)
+        self.assertEqual(win, null)
 
 
 try:
@@ -213,9 +255,7 @@ try:
     k = MPI.Datatype.Free_keyval(k)
 except NotImplementedError:
     unittest.disable(BaseTestDatatypeAttr, 'mpi-type-attr')
-SpectrumMPI = MPI.get_vendor()[0] == 'Spectrum MPI'
 try:
-    if SpectrumMPI: raise NotImplementedError
     MPI.Win.Create(MPI.BOTTOM, 1, MPI.INFO_NULL, MPI.COMM_SELF).Free()
     k = MPI.Win.Create_keyval()
     k = MPI.Win.Free_keyval(k)

@@ -1,35 +1,28 @@
-import sys, os, platform
+import os
+import sys
+import shlex
+import shutil
+import logging
+import platform
+from collections import OrderedDict
+from configparser import ConfigParser
+from configparser import Error as ConfigParserError
 
-from distutils.util  import split_quoted
-from distutils.spawn import find_executable
-from distutils import log as dulog
 
-try:
-    from collections import OrderedDict
-except ImportError:
-    OrderedDict = dict
+_logger = logging.getLogger("mpiconfig")
+_logger.setLevel(logging.INFO)
 
-try:
-    from configparser import ConfigParser
-    from configparser import Error as ConfigParserError
-except ImportError:
-    from ConfigParser import ConfigParser
-    from ConfigParser import Error as ConfigParserError
-
-class Config(object):
+class Config:
 
     def __init__(self, logger=None):
-        self.log = logger or dulog
+        self.log = logger or _logger
         self.section  = None
         self.filename = None
         self.compiler_info = OrderedDict((
-                ('mpicc'  , None),
-                ('mpicxx' , None),
-                ('mpifort', None),
-                ('mpif90' , None),
-                ('mpif77' , None),
-                ('mpild'  , None),
-                ))
+            ('mpicc'  , None),
+            ('mpicxx' , None),
+            ('mpild'  , None),
+        ))
         self.library_info = OrderedDict((
             ('define_macros'        , []),
             ('undef_macros'         , []),
@@ -42,7 +35,7 @@ class Config(object):
             ('extra_compile_args'   , []),
             ('extra_link_args'      , []),
             ('extra_objects'        , []),
-            ))
+        ))
 
     def __bool__(self):
         for v in self.compiler_info.values():
@@ -63,23 +56,15 @@ class Config(object):
         return d
 
     def info(self, log=None):
-        if log is None: log = self.log
-        mpicc   = self.compiler_info.get('mpicc')
-        mpicxx  = self.compiler_info.get('mpicxx')
-        mpifort = self.compiler_info.get('mpifort')
-        mpif90  = self.compiler_info.get('mpif90')
-        mpif77  = self.compiler_info.get('mpif77')
-        mpild   = self.compiler_info.get('mpild')
+        if log is None:
+            log = self.log
+        mpicc  = self.compiler_info.get('mpicc')
+        mpicxx = self.compiler_info.get('mpicxx')
+        mpild  = self.compiler_info.get('mpild')
         if mpicc:
             log.info("MPI C compiler:    %s", mpicc)
         if mpicxx:
             log.info("MPI C++ compiler:  %s", mpicxx)
-        if mpifort:
-            log.info("MPI F compiler:    %s", mpifort)
-        if mpif90:
-            log.info("MPI F90 compiler:  %s", mpif90)
-        if mpif77:
-            log.info("MPI F77 compiler:  %s", mpif77)
         if mpild:
             log.info("MPI linker:        %s", mpild)
 
@@ -95,7 +80,8 @@ class Config(object):
             self.update(more)
 
     def setup(self, options, environ=None):
-        if environ is None: environ = os.environ
+        if environ is None:
+            environ = os.environ
         self.setup_library_info(options, environ)
         self.setup_compiler_info(options, environ)
 
@@ -103,6 +89,7 @@ class Config(object):
         filename = section = None
         mpiopt = getattr(options, 'mpi', None)
         mpiopt = environ.get('MPICFG', mpiopt)
+        mpiopt = environ.get('MPI4PY_BUILD_MPICFG', mpiopt)
         if mpiopt:
             if ',' in mpiopt:
                 section, filename = mpiopt.split(',', 1)
@@ -112,16 +99,21 @@ class Config(object):
                 filename = mpiopt
             else:
                 section = mpiopt
-        if not filename: filename = "mpi.cfg"
-        if not section:  section  = "mpi"
+        if not filename:
+            filename = "mpi.cfg"
+        if not section:
+            section  = "mpi"
 
         mach = platform.machine()
-        arch = platform.architecture()[0]
+        arch = platform.architecture(None)[0]
         plat = sys.platform
         osnm = os.name
-        if   'linux' == plat[:5]: plat = 'linux'
-        elif 'sunos' == plat[:5]: plat = 'solaris'
-        elif 'win'   == plat[:3]: plat = 'windows'
+        if plat.startswith('linux'):
+            plat = 'linux'
+        elif plat.startswith('sunos'):
+            plat = 'solaris'
+        elif plat.startswith('win'):
+            plat = 'windows'
         suffixes = []
         suffixes.append(plat+'-'+mach)
         suffixes.append(plat+'-'+arch)
@@ -144,19 +136,19 @@ class Config(object):
         pass
 
     def _setup_windows(self):
-        if self._setup_windows_intelmpi():
+        if self._setup_windows_impi():
             return
         if self._setup_windows_msmpi():
             return
 
-    def _setup_windows_intelmpi(self):
+    def _setup_windows_impi(self):
         from os.path import join, isdir, isfile
         I_MPI_ROOT = os.environ.get('I_MPI_ROOT')
         if not I_MPI_ROOT:
             return None
         if not isdir(I_MPI_ROOT):
             return None
-        arch = platform.architecture()[0][:2]
+        arch = platform.architecture(None)[0][:2]
         archdir = {'32':'ia32', '64':'intel64'}[arch]
         mpi_dir = join(I_MPI_ROOT, archdir)
         if not isdir(mpi_dir):
@@ -210,8 +202,8 @@ class Config(object):
                     return (int(major), int(minor))
                 except Exception:
                     raise RuntimeError(
-                        "invalid environment: MSMPI_VER="+MSMPI_VER
-                    )
+                        f"invalid environment: MSMPI_VER={MSMPI_VER}"
+                    ) from None
             return None
         def setup_msmpi(MSMPI_INC, MSMPI_LIB):
             from os.path import join, isfile
@@ -238,7 +230,7 @@ class Config(object):
             self.section = 'msmpi'
             self.filename = [os.path.dirname(MSMPI_INC)]
             return True
-        arch = platform.architecture()[0][:2]
+        arch = platform.architecture(None)[0][:2]
         # Look for Microsoft MPI in the environment
         MSMPI_INC = os.environ.get('MSMPI_INC')
         MSMPI_LIB = os.environ.get('MSMPI_LIB'+arch)
@@ -285,7 +277,7 @@ class Config(object):
             if name == 'msmpi':
                 include_dir = os.path.join(mpi_dir, 'inc')
                 library = 'msmpi'
-                arch = platform.architecture()[0]
+                arch = platform.architecture(None)[0]
                 if arch == '32bit':
                     library_dir = os.path.join(library_dir, 'i386')
                 if arch == '64bit':
@@ -306,30 +298,32 @@ class Config(object):
 
     def setup_compiler_info(self, options, environ):
         def find_exe(cmd, path=None):
-            if not cmd: return None
-            parts = split_quoted(cmd)
+            if not cmd:
+                return None
+            parts = shlex.split(cmd)
             exe, args = parts[0], parts[1:]
             if not os.path.isabs(exe) and path:
                 exe = os.path.basename(exe)
-            exe = find_executable(exe, path)
-            if not exe: return None
-            return ' '.join([exe]+args)
+            exe = shutil.which(exe, path=path)
+            if not exe:
+                return None
+            return ' '.join([exe, *args])
         COMPILERS = (
-            ('mpicc',   ['mpicc',   'mpcc_r']),
-            ('mpicxx',  ['mpicxx',  'mpic++', 'mpiCC', 'mpCC_r']),
-            ('mpifort', ['mpifort', 'mpif90', 'mpif77', 'mpfort_r']),
-            ('mpif90',  ['mpif90',  'mpf90_r']),
-            ('mpif77',  ['mpif77',  'mpf77_r']),
+            ('mpicc',   ['mpicc']),
+            ('mpicxx',  ['mpicxx',  'mpic++', 'mpiCC']),
             ('mpild',   []),
-            )
+        )
         #
         compiler_info = {}
         PATH = environ.get('PATH', '')
         for name, _ in COMPILERS:
-            cmd = (environ.get(name.upper()) or
-                   getattr(options, name, None) or
-                   self.compiler_info.get(name) or
-                   None)
+            cmd = (
+                environ.get(f'MPI4PY_BUILD_{name.upper()}') or
+                environ.get(name.upper()) or
+                getattr(options, name, None) or
+                self.compiler_info.get(name) or
+                None
+            )
             if cmd:
                 exe = find_exe(cmd, path=PATH)
                 if exe:
@@ -337,7 +331,7 @@ class Config(object):
                     PATH = path + os.path.pathsep + PATH
                     compiler_info[name] = exe
                 else:
-                    self.log.error("error: '%s' not found", cmd)
+                    self.log.warning("warning: %s='%s' not found", name, cmd)
         #
         if not self and not compiler_info:
             for name, candidates in COMPILERS:
@@ -367,7 +361,7 @@ class Config(object):
         try:
             read_ok = parser.read(filenames)
         except ConfigParserError:
-            self.log.error(
+            self.log.exception(
                 "error: parsing configuration file/s '%s'",
                 os.path.pathsep.join(filenames))
             return None
@@ -392,9 +386,10 @@ class Config(object):
         expandvars = os.path.expandvars
         library_info = type(self.library_info)()
         for k, v in parser_items:
-            if k in ('define_macros',
-                     'undef_macros',
-                     ):
+            if k in (
+                'define_macros',
+                'undef_macros',
+            ):
                 macros = [e.strip() for e in v.split(',')]
                 if k == 'define_macros':
                     for i, m in enumerate(macros):
@@ -405,24 +400,32 @@ class Config(object):
                             macro = (m, None)
                         macros[i] = macro
                 library_info[k] = macros
-            elif k in ('include_dirs',
-                       'library_dirs',
-                       'runtime_dirs',
-                       'runtime_library_dirs',
-                       ):
-                if k == 'runtime_dirs': k = 'runtime_library_dirs'
+            elif k in (
+                'include_dirs',
+                'library_dirs',
+                'rpath',
+                'runtime_dirs',
+                'runtime_library_dirs',
+            ):
+                if k in ('rpath', 'runtime_dirs'):
+                    k = 'runtime_library_dirs'
                 pathlist = [p.strip() for p in v.split(pathsep)]
-                library_info[k] = [expanduser(expandvars(p))
-                                   for p in pathlist if p]
+                library_info[k] = [
+                    expanduser(expandvars(p))
+                    for p in pathlist if p
+                ]
             elif k == 'libraries':
-                library_info[k] = [e.strip() for e in split_quoted(v)]
-            elif k in ('extra_compile_args',
-                       'extra_link_args',
-                       ):
-                library_info[k] = split_quoted(v)
+                library_info[k] = [e.strip() for e in shlex.split(v)]
+            elif k in (
+                'extra_compile_args',
+                'extra_link_args',
+            ):
+                library_info[k] = shlex.split(v)
             elif k == 'extra_objects':
-                library_info[k] = [expanduser(expandvars(e))
-                                   for e in split_quoted(v)]
+                library_info[k] = [
+                    expanduser(expandvars(e))
+                    for e in shlex.split(v)
+                ]
             elif hasattr(self, k):
                 library_info[k] = v.strip()
             else:
@@ -439,21 +442,23 @@ class Config(object):
         compiler_info   = self.compiler_info.copy()
         library_info = self.library_info.copy()
         for k in library_info:
-            if k in ('define_macros',
-                     'undef_macros',
-                     ):
+            if k in (
+                'define_macros',
+                'undef_macros',
+            ):
                 macros = library_info[k]
                 if k == 'define_macros':
                     for i, (m, v) in enumerate(macros):
                         if v is None:
                             macros[i] = m
                         else:
-                            macros[i] = '%s=%s' % (m, v)
+                            macros[i] = f'{m}={v}'
                 library_info[k] = ','.join(macros)
-            elif k in ('include_dirs',
-                       'library_dirs',
-                       'runtime_library_dirs',
-                       ):
+            elif k in (
+                'include_dirs',
+                'library_dirs',
+                'runtime_library_dirs',
+            ):
                 library_info[k] = os.path.pathsep.join(library_info[k])
             elif isinstance(library_info[k], list):
                 library_info[k] = ' '.join(library_info[k])
@@ -464,10 +469,12 @@ class Config(object):
             parser = ConfigParser()
         parser.add_section(section)
         for option, value in compiler_info.items():
-            if not value: continue
+            if not value:
+                continue
             parser.set(section, option, value)
         for option, value in library_info.items():
-            if not value: continue
+            if not value:
+                continue
             parser.set(section, option, value)
         # save configuration file
         if filename is None:
@@ -475,7 +482,7 @@ class Config(object):
         elif hasattr(filename, 'write'):
             parser.write(filename)
         elif isinstance(filename, str):
-            with open(filename, 'w') as f:
+            with open(filename, 'w', encoding='utf-8') as f:
                 parser.write(f)
         return parser
 
@@ -483,16 +490,12 @@ class Config(object):
 if __name__ == '__main__':
     import optparse
     parser = optparse.OptionParser()
-    parser.add_option("--mpi",     type="string")
-    parser.add_option("--mpicc",   type="string")
-    parser.add_option("--mpicxx",  type="string")
-    parser.add_option("--mpifort", type="string")
-    parser.add_option("--mpif90",  type="string")
-    parser.add_option("--mpif77",  type="string")
-    parser.add_option("--mpild",   type="string")
-    (opts, args) = parser.parse_args()
+    parser.add_option("--mpi",    type="string")
+    parser.add_option("--mpicc",  type="string")
+    parser.add_option("--mpicxx", type="string")
+    parser.add_option("--mpild",  type="string")
+    opts, args = parser.parse_args()
 
-    log = dulog.Log(dulog.INFO)
-    cfg = Config(log)
+    cfg = Config()
     cfg.setup(opts)
     cfg.dump()

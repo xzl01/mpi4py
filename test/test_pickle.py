@@ -3,11 +3,6 @@ import mpiunittest as unittest
 import sys
 
 try:
-    import cPickle
-except ImportError:
-    cPickle = None
-
-try:
     import pickle as pyPickle
 except ImportError:
     pyPickle = None
@@ -45,13 +40,10 @@ OBJS = [
     (0, 1, 2),
     [0, 1, 2],
     {'a':0, 'b':1},
-    ]
+]
 
-try:
-    memoryview
-    tobytes = lambda s: memoryview(s).tobytes()
-except NameError:
-    tobytes = lambda s: buffer(s)[:]
+def tobytes(s):
+    return memoryview(s).tobytes()
 
 class TestPickle(unittest.TestCase):
 
@@ -71,11 +63,9 @@ class TestPickle(unittest.TestCase):
 
     def testDefault(self):
         pickle = self.pickle
-        protocols = [0, 1, 2]
-        if sys.version_info[:2] >= (3, 0):
-            protocols.append(3)
-        if sys.version_info[:2] >= (3, 4):
-            protocols.append(4)
+        protocols = [0, 1, 2, 3, 4]
+        if sys.version_info[:2] >= (3, 8):
+            protocols.append(5)
         protocols.append(-1)
         protocols.append(None)
         for proto in protocols:
@@ -84,35 +74,11 @@ class TestPickle(unittest.TestCase):
                 self.do_pickle(obj, pickle)
             self.do_pickle(OBJS, pickle)
 
-    def testCPickle(self):
-        if cPickle is None: return
-        pickle = self.pickle
-        dumps = cPickle.dumps
-        loads = cPickle.loads
-        protocols = [0, 1, 2]
-        if sys.version_info[:2] >= (3, 0):
-            protocols.append(3)
-        if sys.version_info[:2] >= (3, 4):
-            protocols.append(4)
-        if sys.version_info[:2] >= (3, 8):
-            protocols.append(5)
-        protocols.append(-1)
-        protocols.append(None)
-        for proto in protocols:
-            pickle.__init__(dumps, loads, proto)
-            for obj in OBJS:
-                self.do_pickle(obj, pickle)
-            self.do_pickle(OBJS, pickle)
-
     def testPyPickle(self):
         pickle = self.pickle
         dumps = pyPickle.dumps
         loads = pyPickle.loads
-        protocols = [0, 1, 2]
-        if sys.version_info[:2] >= (3, 0):
-            protocols.append(3)
-        if sys.version_info[:2] >= (3, 4):
-            protocols.append(4)
+        protocols = [0, 1, 2, 3, 4]
         if sys.version_info[:2] >= (3, 8):
             protocols.append(5)
         protocols.append(-1)
@@ -142,10 +108,7 @@ class TestPickle(unittest.TestCase):
         pickle = self.pickle
         dumps = marshal.dumps
         loads = marshal.loads
-        protocols = [0, 1, 2]
-        if sys.version_info[:2] >= (3, 4):
-            protocols.append(3)
-            protocols.append(4)
+        protocols = [0, 1, 2, 3, 4]
         protocols.append(None)
         for protocol in protocols:
             pickle.__init__(dumps, loads, protocol)
@@ -159,8 +122,10 @@ class TestPickle(unittest.TestCase):
         dumps = lambda o: json.dumps(o).encode()
         loads = lambda s: json.loads(tobytes(s).decode())
         pickle.__init__(dumps, loads)
-        OBJS2 = [o for o in OBJS
-                 if not isinstance(o, (float, complex, tuple))]
+        OBJS2 = [
+            o for o in OBJS
+            if not isinstance(o, (float, complex, tuple))
+        ]
         for obj in OBJS2:
             self.do_pickle(obj, pickle)
         self.do_pickle(OBJS2, pickle)
@@ -171,8 +136,10 @@ class TestPickle(unittest.TestCase):
         dumps = lambda o: yaml.dump(o).encode()
         loads = lambda s: yaml.load(tobytes(s).decode(), Loader=yaml.Loader)
         pickle.__init__(dumps, loads)
-        OBJS2 = [o for o in OBJS
-                 if not isinstance(o, (complex, tuple))]
+        OBJS2 = [
+            o for o in OBJS
+            if not isinstance(o, (complex, tuple))
+        ]
         for obj in OBJS2:
             self.do_pickle(obj, pickle)
         self.do_pickle(OBJS2, pickle)

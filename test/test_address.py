@@ -1,14 +1,11 @@
 from mpi4py import MPI
 import mpiunittest as unittest
 
-try:
-    import array
-except ImportError:
-    array = None
-try:
-    import numpy
-except ImportError:
-    numpy = None
+from arrayimpl import (
+    array,
+    numpy,
+)
+
 
 class TestAddress(unittest.TestCase):
 
@@ -29,6 +26,13 @@ class TestAddress(unittest.TestCase):
         addr = MPI.Get_address(location)
         addr = unpack('P', pack('P', addr))[0]
         self.assertEqual(addr, bufptr)
+
+    def testNone(self):
+        base = MPI.Get_address(None)
+        addr = MPI.Aint_add(base, 0)
+        self.assertEqual(addr, base)
+        diff = MPI.Aint_diff(base, base)
+        self.assertEqual(diff, 0)
 
     def testBottom(self):
         base = MPI.Get_address(MPI.BOTTOM)

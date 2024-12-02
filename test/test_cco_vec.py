@@ -16,15 +16,17 @@ def maxvalue(a):
         return 2 ** (a.itemsize * 7) - 1
 
 
-class BaseTestCCOVec(object):
+class BaseTestCCOVec:
 
     COMM = MPI.COMM_NULL
 
     def testGatherv(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check_a = arrayimpl.scalar(root)
+                check_b = arrayimpl.scalar(-1)
                 for count in range(size):
                     sbuf = array(root, typecode, count)
                     rbuf = array(  -1, typecode, size*size)
@@ -40,15 +42,17 @@ class BaseTestCCOVec(object):
                             row = rbuf[i*size:(i+1)*size]
                             a, b = row[:count], row[count:]
                             for va in a:
-                                self.assertEqual(va, root)
+                                self.assertEqual(va, check_a)
                             for vb in b:
-                                self.assertEqual(vb, -1)
+                                self.assertEqual(vb, check_b)
 
     def testGatherv2(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check_a = arrayimpl.scalar(root)
+                check_b = arrayimpl.scalar(-1)
                 for count in range(size):
                     sbuf = array(root, typecode, size)
                     rbuf = array(  -1, typecode, size*size)
@@ -63,15 +67,16 @@ class BaseTestCCOVec(object):
                             row = rbuf[i*size:(i+1)*size]
                             a, b = row[:count], row[count:]
                             for va in a:
-                                self.assertEqual(va, root)
+                                self.assertEqual(va, check_a)
                             for vb in b:
-                                self.assertEqual(vb, -1)
+                                self.assertEqual(vb, check_b)
 
     def testGatherv3(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check = arrayimpl.scalar(root)
                 for count in range(size+1):
                     #
                     sbuf = array(root, typecode, count).as_raw()
@@ -84,7 +89,7 @@ class BaseTestCCOVec(object):
                     self.COMM.Barrier()
                     if recvbuf is not None:
                         for v in rbuf:
-                            self.assertEqual(v, root)
+                            self.assertEqual(v, check)
                     #
                     sbuf = array(root, typecode, count).as_raw()
                     if rank == root:
@@ -95,13 +100,14 @@ class BaseTestCCOVec(object):
                     self.COMM.Barrier()
                     if rank == root:
                         for v in rbuf:
-                            self.assertEqual(v, root)
+                            self.assertEqual(v, check)
 
     def testScatterv(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check = arrayimpl.scalar(root)
                 for count in range(size):
                     sbuf = array(root, typecode, size*size)
                     rbuf = array(  -1, typecode, count)
@@ -111,13 +117,15 @@ class BaseTestCCOVec(object):
                     if rank != root: sendbuf = None
                     self.COMM.Scatterv(sendbuf, rbuf.as_mpi(), root)
                     for vr in rbuf:
-                        self.assertEqual(vr, root)
+                        self.assertEqual(vr, check)
 
     def testScatterv2(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check_a = arrayimpl.scalar(root)
+                check_b = arrayimpl.scalar(-1)
                 for count in range(size):
                     sbuf = array(root, typecode, size*size)
                     rbuf = array(  -1, typecode, size)
@@ -127,15 +135,16 @@ class BaseTestCCOVec(object):
                     self.COMM.Scatterv(sendbuf, recvbuf, root)
                     a, b = rbuf[:count], rbuf[count:]
                     for va in a:
-                        self.assertEqual(va, root)
+                        self.assertEqual(va, check_a)
                     for vb in b:
-                        self.assertEqual(vb, -1)
+                        self.assertEqual(vb, check_b)
 
     def testScatterv3(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check = arrayimpl.scalar(root)
                 for count in range(size+1):
                     #
                     sbuf = array(root, typecode, count*size).as_raw()
@@ -145,7 +154,7 @@ class BaseTestCCOVec(object):
                     if rank != root: sendbuf = None
                     self.COMM.Scatterv(sendbuf, recvbuf, root)
                     for v in rbuf:
-                        self.assertEqual(v, root)
+                        self.assertEqual(v, check)
                     #
                     if rank == root:
                         sbuf = array(root, typecode, count*size).as_raw()
@@ -154,13 +163,15 @@ class BaseTestCCOVec(object):
                     rbuf = array(  -1, typecode, count).as_raw()
                     self.COMM.Scatterv(sbuf, rbuf, root)
                     for v in rbuf:
-                        self.assertEqual(v, root)
+                        self.assertEqual(v, check)
 
     def testAllgatherv(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check_a = arrayimpl.scalar(root)
+                check_b = arrayimpl.scalar(-1)
                 for count in range(size):
                     sbuf = array(root, typecode, count)
                     rbuf = array(  -1, typecode, size*size)
@@ -173,15 +184,17 @@ class BaseTestCCOVec(object):
                         row = rbuf[i*size:(i+1)*size]
                         a, b = row[:count], row[count:]
                         for va in a:
-                            self.assertEqual(va, root)
+                            self.assertEqual(va, check_a)
                         for vb in b:
-                            self.assertEqual(vb, -1)
+                            self.assertEqual(vb, check_b)
 
     def testAllgatherv2(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check_a = arrayimpl.scalar(root)
+                check_b = arrayimpl.scalar(-1)
                 for count in range(size):
                     sbuf = array(root, typecode, size)
                     rbuf = array(  -1, typecode, size*size)
@@ -192,15 +205,16 @@ class BaseTestCCOVec(object):
                         row = rbuf[i*size:(i+1)*size]
                         a, b = row[:count], row[count:]
                         for va in a:
-                            self.assertEqual(va, root)
+                            self.assertEqual(va, check_a)
                         for vb in b:
-                            self.assertEqual(vb, -1)
+                            self.assertEqual(vb, check_b)
 
     def testAllgatherv3(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check = arrayimpl.scalar(root)
                 for count in range(size+1):
                     #
                     sbuf = array(root, typecode, count).as_raw()
@@ -209,19 +223,21 @@ class BaseTestCCOVec(object):
                     recvbuf = [rbuf, count]
                     self.COMM.Allgatherv(sendbuf, recvbuf)
                     for v in rbuf:
-                        self.assertEqual(v, root)
+                        self.assertEqual(v, check)
                     #
                     sbuf = array(root, typecode, count).as_raw()
                     rbuf = array(  -1, typecode, count*size).as_raw()
                     self.COMM.Allgatherv(sbuf, rbuf)
                     for v in rbuf:
-                        self.assertEqual(v, root)
+                        self.assertEqual(v, check)
 
     def testAlltoallv(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check_a = arrayimpl.scalar(root)
+                check_b = arrayimpl.scalar(-1)
                 for count in range(size):
                     sbuf = array(root, typecode, size*size)
                     rbuf = array(  -1, typecode, size*size)
@@ -234,15 +250,17 @@ class BaseTestCCOVec(object):
                         row = rbuf[i*size:(i+1)*size]
                         a, b = row[:count], row[count:]
                         for va in a:
-                            self.assertEqual(va, root)
+                            self.assertEqual(va, check_a)
                         for vb in b:
-                            self.assertEqual(vb, -1)
+                            self.assertEqual(vb, check_b)
 
     def testAlltoallv2(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check_a = arrayimpl.scalar(root)
+                check_b = arrayimpl.scalar(-1)
                 for count in range(size):
                     sbuf = array(root, typecode, size*size)
                     rbuf = array(  -1, typecode, size*size)
@@ -253,15 +271,16 @@ class BaseTestCCOVec(object):
                         row = rbuf[i*size:(i+1)*size]
                         a, b = row[:count], row[count:]
                         for va in a:
-                            self.assertEqual(va, root)
+                            self.assertEqual(va, check_a)
                         for vb in b:
-                            self.assertEqual(vb, -1)
+                            self.assertEqual(vb, check_b)
 
     def testAlltoallv3(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for root in range(size):
+                check = arrayimpl.scalar(root)
                 for count in range(size+1):
                     #
                     sbuf = array(root, typecode, count*size).as_raw()
@@ -270,19 +289,20 @@ class BaseTestCCOVec(object):
                     recvbuf = [rbuf, count]
                     self.COMM.Alltoallv(sendbuf, recvbuf)
                     for v in rbuf:
-                        self.assertEqual(v, root)
+                        self.assertEqual(v, check)
                     #
                     sbuf = array(root, typecode, count*size).as_raw()
                     rbuf = array(  -1, typecode, count*size).as_raw()
                     self.COMM.Alltoallv(sbuf, rbuf)
                     for v in rbuf:
-                        self.assertEqual(v, root)
+                        self.assertEqual(v, check)
 
     def testAlltoallw(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
-            for n in range(1,size+1):
+        for array, typecode in arrayimpl.loop():
+            for n in range(1, size+1):
+                check = arrayimpl.scalar(n)
                 sbuf = array( n, typecode, (size, n))
                 rbuf = array(-1, typecode, (size, n))
                 sdt, rdt = sbuf.mpidtype, rbuf.mpidtype
@@ -295,13 +315,15 @@ class BaseTestCCOVec(object):
                 except NotImplementedError:
                     self.skipTest('mpi-alltoallw')
                 for value in rbuf.flat:
-                    self.assertEqual(value, n)
+                    self.assertEqual(value, check)
 
     def testAlltoallwBottom(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
+            if unittest.is_mpi_gpu('openmpi', array): continue
             for n in range(1, size+1):
+                check = arrayimpl.scalar(n)
                 sbuf = array( n, typecode, (size, n))
                 rbuf = array(-1, typecode, (size, n))
                 saddr = MPI.Get_address(sbuf.as_raw())
@@ -325,19 +347,19 @@ class BaseTestCCOVec(object):
                     for t in stypes: t.Free()
                     for t in rtypes: t.Free()
                 for value in rbuf.flat:
-                    self.assertEqual(value, n)
+                    self.assertEqual(value, check)
 
 @unittest.skipMPI('msmpi(<8.1.0)')
 @unittest.skipMPI('openmpi(<1.8.0)')
 @unittest.skipIf(MPI.BOTTOM == MPI.IN_PLACE, 'mpi-in-place')
-class BaseTestCCOVecInplace(object):
+class BaseTestCCOVecInplace:
 
     COMM = MPI.COMM_NULL
 
     def testAlltoallv(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for count in range(size):
                 rbuf = array(-1, typecode, size*size)
                 counts = [count] * size
@@ -351,14 +373,16 @@ class BaseTestCCOVecInplace(object):
                     row = rbuf[i*size:(i+1)*size]
                     a, b = row[:count], row[count:]
                     for va in a:
-                        self.assertEqual(va, i)
+                        check_a = arrayimpl.scalar(i)
+                        self.assertEqual(va, check_a)
                     for vb in b:
-                        self.assertEqual(vb, -1)
+                        check_b = arrayimpl.scalar(-1)
+                        self.assertEqual(vb, check_b)
 
     def testAlltoallw(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for count in range(size):
                 rbuf = array(-1, typecode, size*size)
                 for i in range(size):
@@ -375,14 +399,16 @@ class BaseTestCCOVecInplace(object):
                     row = rbuf[i*size:(i+1)*size]
                     a, b = row[:count], row[count:]
                     for va in a:
-                        self.assertEqual(va, i)
+                        check_a = arrayimpl.scalar(i)
+                        self.assertEqual(va, check_a)
                     for vb in b:
-                        self.assertEqual(vb, -1)
+                        check_b = arrayimpl.scalar(-1)
+                        self.assertEqual(vb, check_b)
 
     def testAlltoallw2(self):
         size = self.COMM.Get_size()
         rank = self.COMM.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
+        for array, typecode in arrayimpl.loop():
             for count in range(size):
                 rbuf = array(-1, typecode, size*size)
                 for i in range(size):
@@ -399,9 +425,11 @@ class BaseTestCCOVecInplace(object):
                     row = rbuf[i*size:(i+1)*size]
                     a, b = row[:count], row[count:]
                     for va in a:
-                        self.assertEqual(va, i)
+                        check_a = arrayimpl.scalar(i)
+                        self.assertEqual(va, check_a)
                     for vb in b:
-                        self.assertEqual(vb, -1)
+                        check_b = arrayimpl.scalar(-1)
+                        self.assertEqual(vb, check_b)
 
 
 class TestCCOVecSelf(BaseTestCCOVec, unittest.TestCase):

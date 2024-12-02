@@ -7,8 +7,8 @@ try:
     import mpiunittest as unittest
 except ImportError:
     sys.path.append(
-        os.path.abspath(
-            os.path.dirname(__file__)))
+        os.path.dirname(
+            os.path.abspath(__file__)))
     import mpiunittest as unittest
 
 try:
@@ -20,26 +20,86 @@ except ImportError:
     np_dtype = None
     np_version = None
 
-typecodes = list("?cbhilqpBHILQfdgFDG")
-typecodes += ['b{:d}'.format(n) for n in (1,)]
-typecodes += ['i{:d}'.format(n) for n in (1,2,4,8)]
-typecodes += ['u{:d}'.format(n) for n in (1,2,4,8)]
-typecodes += ['f{:d}'.format(n) for n in (4,8)]
+typecodes = list("?cbhilqpBHILQPfdgFDG")
+typecodes += [f'b{n:d}' for n in (1,)]
+typecodes += [f'i{n:d}' for n in (1,2,4,8)]
+typecodes += [f'u{n:d}' for n in (1,2,4,8)]
+typecodes += [f'f{n:d}' for n in (4,8)]
+if os.environ.get('COVERAGE_RUN') == 'true':
+    typecodes = list("cif") + ['b1', 'i8', 'f8']
 
-np_lt_117 = (np_version and np_version < (1, 17))
-if np_lt_117 or sys.version_info[0] == 2:
-    typecodes.remove('L')
-if np_lt_117:
-    typecodes.remove('F')
-    typecodes.remove('D')
-    typecodes.remove('G')
+if np_version and np_version < (1, 17):
+    for tc in 'LFDG':
+        if tc in typecodes:
+            typecodes.remove(tc)
 
 name, version = MPI.get_vendor()
 mpich_lt_400 = (name == 'MPICH') and version < (4, 0, 0)
 if mpich_lt_400:
-    typecodes = [t for t in typecodes if t not in 'FDG']
+    for tc in 'FDG':
+        if tc in typecodes:
+            typecodes.remove(tc)
 
-datatypes = [MPI._typedict[t] for t in typecodes]
+if unittest.is_mpi('impi(>=2021.12.0)') and os.name == 'nt':
+    for tc in [*'lLg', 'i4', 'u4']:
+        if tc in typecodes:
+            typecodes.remove(tc)
+
+datatypes = [MPI.Datatype.fromcode(t) for t in typecodes]
+datatypes += [
+    MPI.BYTE,
+    MPI.AINT,
+    MPI.OFFSET,
+    MPI.COUNT,
+]
+
+mpipairtypes = [
+    MPI.SHORT_INT,
+    MPI.INT_INT,
+    MPI.LONG_INT,
+    MPI.FLOAT_INT,
+    MPI.DOUBLE_INT,
+    MPI.LONG_DOUBLE_INT,
+]
+
+mpif77types = [
+    MPI.CHARACTER,
+    MPI.LOGICAL,
+    MPI.INTEGER,
+    MPI.REAL,
+    MPI.DOUBLE_PRECISION,
+    MPI.COMPLEX,
+    MPI.DOUBLE_COMPLEX,
+]
+
+mpif90types = [
+    MPI.LOGICAL1,
+    MPI.LOGICAL2,
+    MPI.LOGICAL4,
+    MPI.LOGICAL8,
+    MPI.INTEGER1,
+    MPI.INTEGER2,
+    MPI.INTEGER4,
+    MPI.INTEGER8,
+    MPI.INTEGER16,
+    MPI.REAL2,
+    MPI.REAL4,
+    MPI.REAL8,
+    MPI.REAL16,
+    MPI.COMPLEX4,
+    MPI.COMPLEX8,
+    MPI.COMPLEX16,
+    MPI.COMPLEX32,
+]
+
+for typelist in [mpif77types, mpif90types]:
+    typelist[:] = [
+        t for t in datatypes
+        if t != MPI.DATATYPE_NULL
+        and t.Get_name() != 'MPI_DATATYPE_NULL'
+        and t.Get_size() != 0
+    ]
+del typelist
 
 class TestUtilDTLib(unittest.TestCase):
 
@@ -90,7 +150,7 @@ class TestUtilDTLib(unittest.TestCase):
     def testSubarray1(self):
         shapes = [(1,), (1, 1), (1, 1, 1), (3,), (3, 4), (2, 3, 4),]
         for dt, shape in itertools.product(typecodes, shapes):
-            spec = "{}{}".format(shape, dt)
+            spec = f"{shape}{dt}"
             with self.subTest(spec=spec):
                 self.check(spec)
 
@@ -112,7 +172,8 @@ class TestUtilDTLib(unittest.TestCase):
         iterN = itertools.product(iter1, iter2)
         iterA = iter([False, True])
         for nt, align in itertools.product(iterN, iterA):
-            spec = "{}{},{}{}".format(*sum(nt, ()))
+            s1, t1, s2, t2 = sum(nt, ())
+            spec = f"{s1}{t1},{s2}{t2}"
             with self.subTest(spec=spec, align=align):
                 self.check(spec, align)
 
@@ -124,7 +185,8 @@ class TestUtilDTLib(unittest.TestCase):
         iterN = itertools.product(iter1, iter2, iter3)
         iterA = iter([False, True])
         for tp, align in itertools.product(iterN, iterA):
-            spec = "{},{},{}".format(*tp)
+            t1, t2, t3 = tp
+            spec = f"{t1},{t2},{t3}"
             with self.subTest(spec=spec, align=align):
                 self.check(spec, align)
 
@@ -178,6 +240,23 @@ class TestUtilDTLib(unittest.TestCase):
                         mt.Free()
                 mt0.Free()
                 mt1.Free()
+
+    @unittest.skipMPI('msmpi')
+    @unittest.skipIf(numpy is None, 'numpy')
+    def testStruct5(self):
+        for t1, t2 in itertools.product(*[typecodes]*2):
+            with self.subTest(t1=t1, t2=t2):
+                dtlist = []
+                dt = np_dtype(f"c,{t1},{t2},c", align=True)
+                dtlist.append(dt)
+                for _ in range(3):
+                    dt = np_dtype([('', dt)]*2, align=True)
+                    dtlist.append(dt)
+                for dt in dtlist:
+                    mt = fromnumpy(dt)
+                    dt2 = tonumpy(mt)
+                    mt.Free()
+                    self.assertEqual(dt, dt2)
 
     def testVector(self):
         for mt in datatypes:
@@ -282,42 +361,14 @@ class TestUtilDTLib(unittest.TestCase):
 
     @unittest.skipMPI('msmpi')
     def testF77(self):
-        mpif77types = [
-            MPI.CHARACTER,
-            #MPI.LOGICAL,
-            MPI.INTEGER,
-            MPI.REAL,
-            MPI.DOUBLE_PRECISION,
-            MPI.COMPLEX,
-            MPI.DOUBLE_COMPLEX,
-        ]
         for mt in mpif77types:
-            if mt == MPI.DATATYPE_NULL:
-                continue
-            if mt.Get_size() == 0:
-                continue
             dt = tonumpy(mt)
             if np_dtype is not None:
                 self.assertEqual(dt.itemsize, mt.extent)
 
     @unittest.skipMPI('msmpi')
     def testF90(self):
-        mpif90types = (
-            MPI.INTEGER1,
-            MPI.INTEGER2,
-            MPI.INTEGER4,
-            MPI.INTEGER8,
-            MPI.INTEGER16,
-            MPI.REAL4,
-            MPI.REAL8,
-            MPI.COMPLEX8,
-            MPI.COMPLEX16,
-        )
         for mt in mpif90types:
-            if mt == MPI.DATATYPE_NULL:
-                continue
-            if mt.Get_size() == 0:
-                continue
             dt = tonumpy(mt)
             if np_dtype is not None:
                 self.assertEqual(dt.itemsize, mt.extent)
@@ -337,7 +388,8 @@ class TestUtilDTLib(unittest.TestCase):
                 if np_dtype is not None:
                     self.assertEqual(dt.kind, 'i')
                     self.assertEqual(dt.itemsize, mt.extent)
-                    tstr = 'i{}'.format(mt.Get_size())
+                    size = mt.Get_size()
+                    tstr = f'i{size}'
                     stp, mtp = self.makeStruct(tstr, mt)
                     self.assertEqual(stp.itemsize, mtp.extent)
                     self.check(mtp)
@@ -358,7 +410,8 @@ class TestUtilDTLib(unittest.TestCase):
                 if np_dtype is not None:
                     self.assertEqual(dt.kind, 'f')
                     self.assertEqual(dt.itemsize, mt.extent)
-                    tstr = 'f{}'.format(mt.Get_size())
+                    size = mt.Get_size()
+                    tstr = f'i{size}'
                     stp, mtp = self.makeStruct(tstr, mt)
                     self.assertEqual(stp.itemsize, mtp.extent)
                     self.check(mtp)
@@ -380,28 +433,109 @@ class TestUtilDTLib(unittest.TestCase):
                     self.assertEqual(dt.kind, 'c')
                     self.assertEqual(dt.itemsize, mt.extent)
 
-    @unittest.skipMPI('msmpi')
-    def testCoverage(self):
-        from mpi4py.util import dtlib
-        mpitypes = (
-            MPI.LOGICAL,
-        )
-        for mt in mpitypes:
-            if mt == MPI.DATATYPE_NULL:
+    def testPair(self):
+        for mt in mpipairtypes:
+            with self.subTest(datatype=mt.name):
+                dt = tonumpy(mt)
+                if np_dtype is not None:
+                    self.assertTrue(dt.isalignedstruct)
+                    self.assertEqual(dt.itemsize, mt.extent)
+        integral = 'bhilqpBHILQP'
+        floating = 'fdg'
+        vtypes = integral + floating
+        itypes = integral
+        for vcode, icode in itertools.product(vtypes, itypes):
+            value = MPI.Datatype.fromcode(vcode)
+            index = MPI.Datatype.fromcode(icode)
+            pair  = MPI.Datatype.Get_value_index(value, index)
+            if pair == MPI.DATATYPE_NULL:
                 continue
-            if mt.Get_size() == 0:
-                continue
-            dtlib._get_alignment(mt)
+            vt, it, pt = map(tonumpy, (value, index, pair))
+            dt = (f'{vt},{it}', {'align': True})
+            if np_dtype is not None:
+                dt = np_dtype(dt[0], **dt[1])
+            self.assertEqual(pt, dt)
 
-    def testAlignment(self):
-        from mpi4py.util import dtlib
-        complexcodes = ['c{}'.format(n) for n in (8, 16)]
+    def testPairStruct(self):
+        cases = [mpipairtypes]*3 +[[False, True]]
+        for mt1, mt2, mt3, dup in itertools.product(*cases):
+            with self.subTest(mt1=mt1.name, mt2=mt2.name, mt3=mt3.name):
+                if dup:
+                    mt1 = mt1.Dup()
+                    mt2 = mt2.Dup()
+                    mt3 = mt3.Dup()
+                align = max(mt.extent for mt in (mt1, mt2, mt3))
+                structtype = MPI.Datatype.Create_struct(
+                    [1, 1, 1], [0, align, align*2], [mt1, mt2, mt3],
+                )
+                if dup:
+                    mt1.Free()
+                    mt2.Free()
+                    mt3.Free()
+                dt = tonumpy(structtype)
+                structtype.Free()
+                if np_dtype is not None:
+                    self.assertTrue(dt.isalignedstruct)
+
+    def testAlignmentComplex(self):
+        complexcodes = list('FDG')
+        complexcodes += [f'c{n}' for n in (8, 16)]
         for t in typecodes + complexcodes:
             with self.subTest(typecode=t):
-                alignment1 = dtlib._get_alignment_ctypes(t)
+                datatype = MPI.Datatype.fromcode(t)
+                alignment1 = MPI._typealign(datatype)
                 if np_dtype is not None:
-                    alignment2 = numpy.dtype(t).alignment
-                    self.assertTrue(alignment1, alignment2)
+                    alignment2 = np_dtype(t).alignment
+                    self.assertEqual(alignment1, alignment2)
+
+    def testAlignmentPair(self):
+        for pairtype in mpipairtypes:
+            alignment1 = MPI._typealign(pairtype)
+            self.assertIn(alignment1, (2, 4, 8, 16))
+            if np_dtype is not None:
+                alignment2 = tonumpy(pairtype).alignment
+                self.assertEqual(alignment1, alignment2)
+
+    def testAlignmentStruct(self):
+        off = MPI.DOUBLE.extent
+        structtype = MPI.Datatype.Create_struct(
+            [1, 1], [0, off], [MPI.INT, MPI.DOUBLE],
+        )
+        alignment = MPI._typealign(structtype)
+        self.assertIsNone(alignment)
+        structtype.Free()
+
+    def testMissingNumPy(self):
+        from mpi4py.util import dtlib
+        np_dtype = dtlib._np_dtype
+        dtlib._np_dtype = None
+        try:
+            for t in typecodes:
+                with self.subTest(typecode=t):
+                    mt = MPI.Datatype.fromcode(t)
+                    dt = tonumpy(mt)
+                    code = mt.tocode()
+                    self.assertEqual(dt, code)
+                    arraytype = mt.Create_contiguous(7)
+                    dt = tonumpy(arraytype)
+                    arraytype.Free()
+                    self.assertIsInstance(dt, tuple)
+                    self.assertEqual(dt[0], code)
+                    self.assertEqual(dt[1], (7,))
+                    structtype = MPI.Datatype.Create_struct(
+                        [1, 1], [0, mt.extent], [mt, mt],
+                    )
+                    dt = tonumpy(structtype)
+                    structtype.Free()
+                    self.assertIsInstance(dt, dict)
+                    self.assertEqual(dt['formats'], [code]*2)
+                    self.assertEqual(dt['offsets'], [0, mt.extent])
+                    self.assertEqual(dt['itemsize'], mt.extent*2)
+                    self.assertTrue(dt['aligned'])
+            with self.assertRaises(RuntimeError):
+                fromnumpy(None)
+        finally:
+            dtlib._np_dtype = np_dtype
 
     @unittest.skipIf(numpy is None, 'numpy')
     def testFailures(self):
@@ -410,8 +544,10 @@ class TestUtilDTLib(unittest.TestCase):
         self.assertRaises(ValueError, fromnumpy, np_dtype('O'))
         self.assertRaises(ValueError, fromnumpy, np_dtype('V'))
         self.assertRaises(ValueError, tonumpy, MPI.DATATYPE_NULL)
-        self.assertRaises(ValueError, tonumpy, MPI.INT_INT)
         mt = MPI.INT.Create_resized(0, 32)
+        self.assertRaises(ValueError, tonumpy, mt)
+        mt.Free()
+        mt = MPI.INT.Create_subarray([2], [1], [0])
         self.assertRaises(ValueError, tonumpy, mt)
         mt.Free()
 

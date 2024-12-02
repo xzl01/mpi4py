@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# testing on 5 processes is recommended by upstream where possible
+# and is safe to oversubscribe with OpenMPI
+# but oversubscribing might be a problem (runs slow) with mpich
+# 32-bit arm is fine, but there are problems with i386
+
+DEB_HOST_ARCH=`dpkg-architecture -qDEB_HOST_ARCH`
+
+nproc=`nproc`
+MIN_PROC=$(( nproc > 2 ? nproc : 2 ))
+NUM_PROC=$(( MIN_PROC > 5 ? 5 : MIN_PROC ))
+
+echo -e "nproc reports ${nproc} processing units available (using ${NUM_PROC})\n"
+
+declare -a DISABLED_TESTS
+
+if [ "${DEB_HOST_ARCH}" = "s390x" ] ; then
+    DISABLED_TESTS=("${DISABLED_TESTS[@]}"
+        # segfault via PMIX (PMIX_ERR_BAD_PARAM) in test_dynproc.TestDPM
+	TestDPM
+
+	# failing RMA tests from test_rma_nb
+	testAccumulate testGetAccumulate
+    )
+fi
+
+TESTS_SEPARATOR=" -x "
+DISABLED_TESTS_STRING=$(printf "${TESTS_SEPARATOR}%s" "${DISABLED_TESTS[@]}")
+if [ "${DISABLED_TESTS_STRING}" = "${TESTS_SEPARATOR}" ]; then
+    DISABLED_TESTS_STRING=""
+fi
+
+for pyver in `py3versions -vs`; do
+  PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe \
+  GITHUB_ACTIONS=true MPI4PY_TEST_SPAWN=false \
+  mpiexec -v -n $NUM_PROC python$pyver test/runtests.py --verbose ${DISABLED_TESTS_STRING}
+done

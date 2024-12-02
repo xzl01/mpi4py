@@ -4,7 +4,7 @@ import sys
 try:
     sys.getrefcount
 except AttributeError:
-    class getrefcount(object):
+    class getrefcount:
         def __init__(self, arg):
             pass
         def __eq__(self, other):
@@ -14,14 +14,32 @@ except AttributeError:
         def __sub__(self, other):
             return self
 
+
 def memzero(m):
     try:
         m[:] = 0
     except IndexError: # cffi buffer
         m[0:len(m)] = b'\0'*len(m)
 
+def ch3_sock():
+    return 'ch3:sock' in MPI.Get_library_version()
 
-class BaseTestWin(object):
+
+class TestWinNull(unittest.TestCase):
+
+    def testConstructor(self):
+        win = MPI.Win()
+        self.assertEqual(win, MPI.WIN_NULL)
+        self.assertIsNot(win, MPI.WIN_NULL)
+        def construct(): MPI.Win((1,2,3))
+        self.assertRaises(TypeError, construct)
+
+    def testGetName(self):
+        name = MPI.WIN_NULL.Get_name()
+        self.assertEqual(name, "MPI_WIN_NULL")
+
+
+class BaseTestWin:
 
     COMM = MPI.COMM_NULL
     INFO = MPI.INFO_NULL
@@ -37,6 +55,7 @@ class BaseTestWin(object):
 
     def testMemory(self):
         memory = self.WIN.tomemory()
+        self.assertEqual(memory.format, 'B')
         pointer = MPI.Get_address(memory)
         length = len(memory)
         base, size, dunit = self.WIN.attrs
@@ -85,10 +104,11 @@ class BaseTestWin(object):
     def testGetSetName(self):
         try:
             name = self.WIN.Get_name()
-            self.WIN.Set_name('mywin')
-            self.assertEqual(self.WIN.Get_name(), 'mywin')
+            self.WIN.Set_name("mywin")
+            self.assertEqual(self.WIN.Get_name(), "mywin")
             self.WIN.Set_name(name)
             self.assertEqual(self.WIN.Get_name(), name)
+            self.WIN.name = self.WIN.name
         except NotImplementedError:
             self.skipTest('mpi-win-name')
 
@@ -99,7 +119,7 @@ class BaseTestWin(object):
                    MPI.WIN_FLAVOR_DYNAMIC,
                    MPI.WIN_FLAVOR_SHARED,)
         flavor = self.WIN.Get_attr(MPI.WIN_CREATE_FLAVOR)
-        self.assertTrue (flavor in flavors)
+        self.assertIn(flavor, flavors)
         self.assertEqual(flavor, self.WIN.flavor)
         self.assertEqual(flavor, self.CREATE_FLAVOR)
 
@@ -107,8 +127,35 @@ class BaseTestWin(object):
     def testMemoryModel(self):
         models = (MPI.WIN_SEPARATE, MPI.WIN_UNIFIED)
         model = self.WIN.Get_attr(MPI.WIN_MODEL)
-        self.assertTrue(model in models)
+        self.assertIn(model, models)
         self.assertEqual(model, self.WIN.model)
+
+    def testPyProps(self):
+        win = self.WIN
+        #
+        group = win.group
+        self.assertEqual(type(group), MPI.Group)
+        self.assertEqual(win.group_size, group.Get_size())
+        self.assertEqual(win.group_rank, group.Get_rank())
+        group.Free()
+        #
+        info = win.info
+        self.assertIs(type(info), MPI.Info)
+        win.info = info
+        info.Free()
+        #
+        self.assertEqual(type(win.attrs), tuple)
+        self.assertEqual(type(win.flavor), int)
+        self.assertEqual(type(win.model), int)
+        self.assertEqual(type(win.name), str)
+        win.name = "mywin"
+        self.assertEqual(win.name, "mywin")
+
+    def testPickle(self):
+        from pickle import dumps, loads
+        with self.assertRaises(ValueError):
+            loads(dumps(self.WIN))
+
 
 class BaseTestWinCreate(BaseTestWin):
 
@@ -181,6 +228,7 @@ class BaseTestWinCreateDynamic(BaseTestWin):
 
     def testMemory(self):
         memory = self.WIN.tomemory()
+        self.assertEqual(memory.format, 'B')
         base = MPI.Get_address(memory)
         size = len(memory)
         self.assertEqual(base, 0)
@@ -231,6 +279,7 @@ class TestWinAllocateWorld(BaseTestWinAllocate, unittest.TestCase):
 class TestWinAllocateSharedSelf(BaseTestWinAllocateShared, unittest.TestCase):
     COMM = MPI.COMM_SELF
 
+@unittest.skipMPI('mpich', ch3_sock() and MPI.COMM_WORLD.Get_size() > 1)
 class TestWinAllocateSharedWorld(BaseTestWinAllocateShared, unittest.TestCase):
     COMM = MPI.COMM_WORLD
 
@@ -241,24 +290,19 @@ class TestWinCreateDynamicWorld(BaseTestWinCreateDynamic, unittest.TestCase):
     COMM = MPI.COMM_WORLD
 
 
-SpectrumMPI = MPI.get_vendor()[0] == 'Spectrum MPI'
 try:
-    if SpectrumMPI: raise NotImplementedError
     MPI.Win.Create(MPI.BOTTOM, 1, MPI.INFO_NULL, MPI.COMM_SELF).Free()
 except (NotImplementedError, MPI.Exception):
     unittest.disable(BaseTestWinCreate, 'mpi-win-create')
 try:
-    if SpectrumMPI: raise NotImplementedError
     MPI.Win.Allocate(1, 1, MPI.INFO_NULL, MPI.COMM_SELF).Free()
 except (NotImplementedError, MPI.Exception):
     unittest.disable(BaseTestWinAllocate, 'mpi-win-allocate')
 try:
-    if SpectrumMPI: raise NotImplementedError
     MPI.Win.Allocate_shared(1, 1, MPI.INFO_NULL, MPI.COMM_SELF).Free()
 except (NotImplementedError, MPI.Exception):
     unittest.disable(BaseTestWinAllocateShared, 'mpi-win-shared')
 try:
-    if SpectrumMPI: raise NotImplementedError
     MPI.Win.Create_dynamic(MPI.INFO_NULL, MPI.COMM_SELF).Free()
 except (NotImplementedError, MPI.Exception):
     unittest.disable(BaseTestWinCreateDynamic, 'mpi-win-dynamic')
