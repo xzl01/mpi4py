@@ -26,14 +26,13 @@ Hosted at *GitHub* [https://mpi4py.github.io/]:
 
 + `User Manual (HTML)`_ (generated with Sphinx_).
 + `User Manual (PDF)`_  (generated with Sphinx_).
-+ `API Reference`_      (generated with Epydoc_).
++ `Reference Guide`_    (generated with Sphinx_).
 
-.. _User Manual (HTML): usrman/index.html
+.. _User Manual (HTML): html/index.html
 .. _User Manual (PDF):  mpi4py.pdf
-.. _API Reference:      apiref/index.html
+.. _Reference Guide:    html/reference/index.html
 
 .. _Sphinx: https://www.sphinx-doc.org/
-.. _Epydoc: http://epydoc.sourceforge.net/
 
 
 Discussion and Support
@@ -60,35 +59,17 @@ Hosted at GitHub:
 + Git Repository:  https://github.com/mpi4py/mpi4py.git
 
 
-Citations
----------
+Citation
+--------
 
-+ L. Dalcin and Y.-L. L. Fang,
-  *mpi4py: Status Update After 12 Years of Development*,
-  Computing in Science & Engineering, 23(4):47-54, 2021.
-  https://doi.org/10.1109/MCSE.2021.3083216
-
-+ L. Dalcin, P. Kler, R. Paz, and A. Cosimo,
-  *Parallel Distributed Computing using Python*,
-  Advances in Water Resources, 34(9):1124-1139, 2011.
-  https://doi.org/10.1016/j.advwatres.2011.04.013
-
-+ L. Dalcin, R. Paz, M. Storti, and J. D'Elia,
-  *MPI for Python: performance improvements and MPI-2 extensions*,
-  Journal of Parallel and Distributed Computing, 68(5):655-662, 2008.
-  https://doi.org/10.1016/j.jpdc.2007.09.005
-
-+ L. Dalcin, R. Paz, and M. Storti,
-  *MPI for Python*,
-  Journal of Parallel and Distributed Computing, 65(9):1108-1115, 2005.
-  https://doi.org/10.1016/j.jpdc.2005.03.010
+.. include:: ../CITATION.rst
 
 
 Acknowledgments
 ---------------
 
 This project was partially supported by the
-Extreme Computing Research Center (ECRC),
+Advanced Algorithm and Numerical Simulations Laboratory (AANSLab),
 Division of Computer, Electrical, and
 Mathematical Sciences & Engineering (CEMSE),
 King Abdullah University of Science and Technology (KAUST).

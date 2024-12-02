@@ -1,76 +1,74 @@
-import os
-import sys
-import glob
+from collections import namedtuple
+import contextlib
 import unittest
-from distutils.versionpredicate import VersionPredicate
 
 
 class TestCase(unittest.TestCase):
 
-    def assertRaisesMPI(self, IErrClass, callableObj, *args, **kwargs):
-        from mpi4py.MPI import Exception as excClass, Get_version
+    def assertAlmostEqual(self, first, second):
+        num = complex(second) - complex(first)
+        den = max(abs(complex(second)), abs(complex(first))) or 1.0
+        if (abs(num/den) > 1e-2):
+            raise self.failureException(f'{first!r} != {second!r}')
+
+    @contextlib.contextmanager
+    def catchNotImplementedError(self, version=None, subversion=0):
         try:
-            callableObj(*args, **kwargs)
+            yield
         except NotImplementedError:
-            if Get_version() >= (2, 0):
-                raise self.failureException("raised NotImplementedError")
-        except excClass:
-            excValue = sys.exc_info()[1]
-            error_class = excValue.Get_error_class()
-            if isinstance(IErrClass, (list, tuple)):
-                match = (error_class in IErrClass)
-            else:
-                match = (error_class == IErrClass)
-            if not match:
-                if isinstance(IErrClass, (list, tuple)):
-                    IErrClassName = [ErrClsName(e) for e in IErrClass]
-                    IErrClassName = type(IErrClass)(IErrClassName)
-                else:
-                    IErrClassName = ErrClsName(IErrClass)
-                raise self.failureException(
-                    "generated error class is '%s' (%d), "
-                    "but expected '%s' (%s)" % \
-                    (ErrClsName(error_class), error_class,
-                     IErrClassName,  IErrClass,)
-                    )
+            if version is not None:
+                from mpi4py import MPI
+                mpi_version = (MPI.VERSION, MPI.SUBVERSION)
+                self.assertLess(mpi_version, (version, subversion))
+
+
+_Version = namedtuple("_Version", ["major", "minor", "patch"])
+
+
+def _parse_version(version):
+    version = tuple(map(int, version.split('.'))) + (0, 0, 0)
+    return _Version(*version[:3])
+
+
+class _VersionPredicate:
+
+    def __init__(self, versionPredicateStr):
+        import re
+        re_name = re.compile(r"(?i)^([a-z_]\w*(?:\.[a-z_]\w*)*)(.*)$")
+        re_pred = re.compile(r"^(<=|>=|<|>|!=|==)(.*)$")
+
+        def split(item):
+            m = re_pred.match(item)
+            op, version = m.groups()
+            version = _parse_version(version)
+            return op, version
+
+        vpstr = versionPredicateStr.replace(' ', '')
+        m = re_name.match(vpstr)
+        name, plist = m.groups()
+        if plist:
+            assert plist[0] == '(' and plist[-1] == ')'
+            plist = plist[1:-1]
+        pred = [split(p) for p in plist.split(',') if p]
+        self.name = name
+        self.pred = pred
+
+    def __str__(self):
+        if self.pred:
+            items = [f"{op}{'.'.join(map(str, ver))}" for op, ver in self.pred]
+            return f"{self.name}({','.join(items)})"
         else:
-            if hasattr(excClass,'__name__'): excName = excClass.__name__
-            else: excName = str(excClass)
-            raise self.failureException("%s not raised" % excName)
+            return self.name
 
-    try:
+    def satisfied_by(self, version):
+        from operator import lt, le, gt, ge, eq, ne
+        opmap = {'<': lt, '<=': le, '>': gt, '>=': ge, '==': eq, '!=': ne}
+        version = _parse_version(version)
+        for op, ver in self.pred:
+            if not opmap[op](version, ver):
+                return False
+        return True
 
-        unittest.TestCase.subTest
-
-    except AttributeError:
-
-        class _SubTestManager(object):
-            def __init__(self, case, msg=None, **params):
-                pass
-            def __enter__(self):
-                pass
-            def __exit__(self, *args):
-                pass
-
-        def subTest(self, msg=None, **params):
-            return self._SubTestManager(self, msg, **params)
-
-
-ErrClsMap = None
-def ErrClsName(ierr):
-    global ErrClsMap
-    if ErrClsMap is None:
-        from mpi4py import MPI
-        ErrClsMap = {}
-        ErrClsMap[MPI.SUCCESS] = 'SUCCESS'
-        for entry in dir(MPI):
-            if entry.startswith('ERR_'):
-                errcls = getattr(MPI, entry)
-                ErrClsMap[errcls] = entry
-    try:
-        return ErrClsMap[ierr]
-    except KeyError:
-        return '<unknown>'
 
 def mpi_predicate(predicate):
     from mpi4py import MPI
@@ -78,24 +76,32 @@ def mpi_predicate(predicate):
         s = s.replace(' ', '')
         s = s.replace('/', '')
         s = s.replace('-', '')
+        s = s.replace('Intel', 'I')
         s = s.replace('Microsoft', 'MS')
         return s.lower()
-    vp = VersionPredicate(key(predicate))
+    vp = _VersionPredicate(key(predicate))
     if vp.name == 'mpi':
         name, version = 'mpi', MPI.Get_version()
         version = version + (0,)
     else:
         name, version = MPI.get_vendor()
     if vp.name == key(name):
-        if vp.satisfied_by('%d.%d.%d' % version):
+        x, y, z = version
+        if vp.satisfied_by(f'{x}.{y}.{z}'):
             return vp
     return None
+
+
+def is_mpi(predicate):
+    return mpi_predicate(predicate)
+
 
 def is_mpi_gpu(predicate, array):
     if array.backend in ('cupy', 'numba', 'dlpack-cupy'):
         if mpi_predicate(predicate):
             return True
     return False
+
 
 SkipTest = unittest.SkipTest
 
@@ -105,6 +111,7 @@ skipIf = unittest.skipIf
 
 skipUnless = unittest.skipUnless
 
+
 def skipMPI(predicate, *conditions):
     version = mpi_predicate(predicate)
     if version:
@@ -112,12 +119,27 @@ def skipMPI(predicate, *conditions):
             return unittest.skip(str(version))
     return unittest.skipIf(False, '')
 
+
 def disable(what, reason):
     return unittest.skip(reason)(what)
 
 
-def main(*args, **kargs):
+@contextlib.contextmanager
+def capture_stderr():
+    import io
+    import sys
+    stderr = sys.stderr
+    stream = io.StringIO()
+    sys.stderr = stream
     try:
-        unittest.main(*args, **kargs)
+        yield stream
+    finally:
+        sys.stderr = stderr
+
+
+def main(*args, **kwargs):
+    from main import main
+    try:
+        main(*args, **kwargs)
     except SystemExit:
         pass

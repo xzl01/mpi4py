@@ -39,9 +39,30 @@ class TestMessage(unittest.TestCase):
         request.Wait()
         self.assertEqual(request, MPI.REQUEST_NULL)
 
+    def testPickle(self):
+        from pickle import dumps, loads
+        for message in (
+            MPI.MESSAGE_NULL,
+            MPI.MESSAGE_NO_PROC,
+        ):
+            msg = loads(dumps(message))
+            self.assertIs(msg, message)
+            msg = loads(dumps(MPI.Message(message)))
+            self.assertIsNot(msg, message)
+            self.assertEqual(msg, message)
+        comm = MPI.COMM_SELF
+        request = comm.Isend(b"", 0, 0)
+        with self.assertRaises(ValueError):
+            loads(dumps(request))
+        message = comm.Mprobe(0, 0)
+        with self.assertRaises(ValueError):
+            loads(dumps(message))
+        message.Recv(bytearray(1))
+        request.Wait()
+
 
 @unittest.skipIf(MPI.MESSAGE_NULL == MPI.MESSAGE_NO_PROC, 'mpi-message')
-class BaseTestP2PMatched(object):
+class BaseTestP2PMatched:
 
     COMM = MPI.COMM_NULL
 
@@ -49,19 +70,19 @@ class BaseTestP2PMatched(object):
         comm = self.COMM.Dup()
         try:
             m = comm.Improbe()
-            self.assertEqual(m, None)
+            self.assertIsNone(m)
             m = comm.Improbe(MPI.ANY_SOURCE)
-            self.assertEqual(m, None)
+            self.assertIsNone(m)
             m = comm.Improbe(MPI.ANY_SOURCE, MPI.ANY_TAG)
-            self.assertEqual(m, None)
+            self.assertIsNone(m)
             status = MPI.Status()
             m = comm.Improbe(MPI.ANY_SOURCE, MPI.ANY_TAG, status)
-            self.assertEqual(m, None)
+            self.assertIsNone(m)
             self.assertEqual(status.source, MPI.ANY_SOURCE)
             self.assertEqual(status.tag,    MPI.ANY_TAG)
             self.assertEqual(status.error,  MPI.SUCCESS)
             m = MPI.Message.Iprobe(comm)
-            self.assertEqual(m, None)
+            self.assertIsNone(m)
             buf = [None, 0, MPI.BYTE]
             s = comm.Isend(buf, comm.rank, 0)
             r = comm.Mprobe(comm.rank, 0).Irecv(buf)
@@ -73,93 +94,96 @@ class BaseTestP2PMatched(object):
         comm = self.COMM
         size = comm.Get_size()
         rank = comm.Get_rank()
-        for array, typecode in arrayimpl.subTest(self):
-            for s in range(0, size+1):
-                sbuf = array( s, typecode, s)
-                rbuf = array(-1, typecode, s)
-                if size == 1:
-                    n = comm.Improbe(0, 0)
-                    self.assertEqual(n, None)
-                    sr = comm.Isend(sbuf.as_mpi(), 0, 0)
-                    m = comm.Mprobe(0, 0)
-                    self.assertTrue(isinstance(m, MPI.Message))
-                    self.assertTrue(m)
-                    rr = m.Irecv(rbuf.as_raw())
-                    self.assertFalse(m)
-                    self.assertTrue(sr)
-                    self.assertTrue(rr)
-                    MPI.Request.Waitall([sr,rr])
-                    self.assertFalse(sr)
-                    self.assertFalse(rr)
-                    #
-                    n = comm.Improbe(0, 0)
-                    self.assertEqual(n, None)
-                    r = comm.Isend(sbuf.as_mpi(), 0, 0)
-                    m = MPI.Message.Probe(comm, 0, 0)
-                    self.assertTrue(isinstance(m, MPI.Message))
-                    self.assertTrue(m)
-                    m.Recv(rbuf.as_raw())
-                    self.assertFalse(m)
-                    r.Wait()
-                    #
-                    n = MPI.Message.Iprobe(comm, 0, 0)
-                    self.assertEqual(n, None)
-                    r = comm.Isend(sbuf.as_mpi(), 0, 0)
-                    comm.Probe(0, 0)
-                    m = MPI.Message.Iprobe(comm, 0, 0)
-                    self.assertTrue(isinstance(m, MPI.Message))
-                    self.assertTrue(m)
-                    m.Recv(rbuf.as_raw())
-                    self.assertFalse(m)
-                    r.Wait()
-                    #
-                    n = MPI.Message.Iprobe(comm, 0, 0)
-                    self.assertEqual(n, None)
-                    r = comm.Isend(sbuf.as_mpi(), 0, 0)
-                    m = comm.Mprobe(0, 0)
-                    self.assertTrue(isinstance(m, MPI.Message))
-                    self.assertTrue(m)
-                    m.Recv(rbuf.as_raw())
-                    self.assertFalse(m)
-                    r.Wait()
-                elif rank == 0:
-                    n = comm.Improbe(0, 0)
-                    self.assertEqual(n, None)
-                    #
-                    comm.Send(sbuf.as_mpi(), 1, 0)
-                    m = comm.Mprobe(1, 0)
-                    self.assertTrue(m)
-                    m.Recv(rbuf.as_raw())
-                    self.assertFalse(m)
-                    #
-                    n = comm.Improbe(0, 0)
-                    self.assertEqual(n, None)
-                    comm.Send(sbuf.as_mpi(), 1, 1)
-                    m = None
-                    while not m:
-                        m = comm.Improbe(1, 1)
-                    m.Irecv(rbuf.as_raw()).Wait()
-                elif rank == 1:
-                    n = comm.Improbe(1, 0)
-                    self.assertEqual(n, None)
-                    #
-                    m = comm.Mprobe(0, 0)
-                    self.assertTrue(m)
-                    m.Recv(rbuf.as_raw())
-                    self.assertFalse(m)
-                    #
-                    n = comm.Improbe(1, 0)
-                    self.assertEqual(n, None)
-                    comm.Send(sbuf.as_mpi(), 0, 0)
-                    m = None
-                    while not m:
-                        m = comm.Improbe(0, 1)
-                    m.Irecv(rbuf.as_mpi()).Wait()
-                    comm.Send(sbuf.as_mpi(), 0, 1)
-                else:
-                    rbuf = sbuf
-                for value in rbuf:
-                    self.assertEqual(value, s)
+        for array, typecode in arrayimpl.loop():
+            with arrayimpl.test(self):
+                for s in range(0, size+1):
+                    with self.subTest(s=s):
+                        sbuf = array( s, typecode, s)
+                        rbuf = array(-1, typecode, s)
+                        if size == 1:
+                            n = comm.Improbe(0, 0)
+                            self.assertIsNone(n)
+                            sr = comm.Isend(sbuf.as_mpi(), 0, 0)
+                            m = comm.Mprobe(0, 0)
+                            self.assertIsInstance(m, MPI.Message)
+                            self.assertTrue(m)
+                            rr = m.Irecv(rbuf.as_raw())
+                            self.assertFalse(m)
+                            self.assertTrue(sr)
+                            self.assertTrue(rr)
+                            MPI.Request.Waitall([sr,rr])
+                            self.assertFalse(sr)
+                            self.assertFalse(rr)
+                            #
+                            n = comm.Improbe(0, 0)
+                            self.assertIsNone(n)
+                            r = comm.Isend(sbuf.as_mpi(), 0, 0)
+                            m = MPI.Message.Probe(comm, 0, 0)
+                            self.assertIsInstance(m, MPI.Message)
+                            self.assertTrue(m)
+                            m.Recv(rbuf.as_raw())
+                            self.assertFalse(m)
+                            r.Wait()
+                            #
+                            n = MPI.Message.Iprobe(comm, 0, 0)
+                            self.assertIsNone(n)
+                            r = comm.Isend(sbuf.as_mpi(), 0, 0)
+                            comm.Probe(0, 0)
+                            m = MPI.Message.Iprobe(comm, 0, 0)
+                            self.assertIsInstance(m, MPI.Message)
+                            self.assertTrue(m)
+                            m.Recv(rbuf.as_raw())
+                            self.assertFalse(m)
+                            r.Wait()
+                            #
+                            n = MPI.Message.Iprobe(comm, 0, 0)
+                            self.assertIsNone(n)
+                            r = comm.Isend(sbuf.as_mpi(), 0, 0)
+                            m = comm.Mprobe(0, 0)
+                            self.assertIsInstance(m, MPI.Message)
+                            self.assertTrue(m)
+                            m.Recv(rbuf.as_raw())
+                            self.assertFalse(m)
+                            r.Wait()
+                        elif rank == 0:
+                            n = comm.Improbe(0, 0)
+                            self.assertIsNone(n)
+                            #
+                            comm.Send(sbuf.as_mpi(), 1, 0)
+                            m = comm.Mprobe(1, 0)
+                            self.assertTrue(m)
+                            m.Recv(rbuf.as_raw())
+                            self.assertFalse(m)
+                            #
+                            n = comm.Improbe(0, 0)
+                            self.assertIsNone(n)
+                            comm.Send(sbuf.as_mpi(), 1, 1)
+                            m = None
+                            while not m:
+                                m = comm.Improbe(1, 1)
+                            m.Irecv(rbuf.as_raw()).Wait()
+                        elif rank == 1:
+                            n = comm.Improbe(1, 0)
+                            self.assertIsNone(n)
+                            #
+                            m = comm.Mprobe(0, 0)
+                            self.assertTrue(m)
+                            m.Recv(rbuf.as_raw())
+                            self.assertFalse(m)
+                            #
+                            n = comm.Improbe(1, 0)
+                            self.assertIsNone(n)
+                            comm.Send(sbuf.as_mpi(), 0, 0)
+                            m = None
+                            while not m:
+                                m = comm.Improbe(0, 1)
+                            m.Irecv(rbuf.as_mpi()).Wait()
+                            comm.Send(sbuf.as_mpi(), 0, 1)
+                        else:
+                            rbuf = sbuf
+                        check = arrayimpl.scalar(s)
+                        for value in rbuf:
+                            self.assertEqual(value, check)
 
 
 class TestP2PMatchedSelf(BaseTestP2PMatched, unittest.TestCase):

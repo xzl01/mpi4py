@@ -11,27 +11,26 @@ submitted from the master process.
 
 def main():
     """Entry point for ``python -m mpi4py.futures ...``."""
-    # pylint: disable=missing-docstring
     # pylint: disable=import-outside-toplevel
     import os
     import sys
     from ..run import run_command_line
     from ..run import set_abort_status
-    from ._lib import SharedPoolCtx
+    from ._core import SharedPoolCtx
 
     class UsageExit(SystemExit):
+        # pylint: disable=missing-class-docstring
         pass
 
     def usage(error=None):
         from textwrap import dedent
-        usage = dedent("""
-        usage: {python} -m {prog} <pyfile> [arg] ...
-           or: {python} -m {prog} -m <module> [arg] ...
-           or: {python} -m {prog} -c <string> [arg] ...
-        """).strip().format(
-            python=os.path.basename(sys.executable),
-            prog=__spec__.parent,
-        )
+        python = os.path.basename(sys.executable)
+        program = __spec__.parent
+        usage = dedent(f"""
+        usage: {python} -m {program} <pyfile> [arg] ...
+           or: {python} -m {program} -m <module> [arg] ...
+           or: {python} -m {program} -c <string> [arg] ...
+        """).strip()
         if error:
             print(error, file=sys.stderr)
             print(usage, file=sys.stderr)
@@ -49,11 +48,11 @@ def main():
             usage()
         elif args[0] in ('-m', '-c'):
             if len(args) < 2:
-                usage("Argument expected for option: " + args[0])
+                usage(f"Argument expected for option: {args[0]}")
         elif args[0].startswith('-'):
-            usage("Unknown option: " + args[0])
+            usage(f"Unknown option: {args[0]}")
         elif not os.path.exists(args[0]):
-            usage("Path does not exist: " + args[0])
+            usage(f"Path does not exist: {args[0]}")
 
     try:
         with SharedPoolCtx() as context:
@@ -63,9 +62,12 @@ def main():
     except UsageExit:
         raise
     except SystemExit as exc:
-        set_abort_status(exc.code)
+        set_abort_status(exc)
         raise
-    except:
+    except KeyboardInterrupt as exc:
+        set_abort_status(exc)
+        raise
+    except BaseException:
         set_abort_status(1)
         raise
 

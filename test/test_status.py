@@ -36,7 +36,7 @@ class TestStatus(unittest.TestCase):
 
     def testIsCancelled(self):
         flag = self.STATUS.Is_cancelled()
-        self.assertTrue(type(flag) is bool)
+        self.assertIs(type(flag), bool)
         self.assertFalse(flag)
 
     def testSetCancelled(self):
@@ -58,11 +58,27 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(self.STATUS.source, 1)
         self.assertEqual(self.STATUS.tag,    2)
         self.assertEqual(self.STATUS.error,  MPI.ERR_ARG)
+        try:
+            self.assertIs(type(self.STATUS.count), int)
+            self.assertEqual(self.STATUS.count, 0)
+            self.STATUS.count = 7
+            self.assertEqual(self.STATUS.count, 7)
+            self.STATUS.count = 0
+        except NotImplementedError:
+            if MPI.Get_version() >= (2,0): raise
+        try:
+            self.assertIs(type(self.STATUS.cancelled), bool)
+            self.assertFalse(self.STATUS.cancelled)
+            self.STATUS.cancelled = True
+            self.assertTrue(self.STATUS.cancelled)
+            self.STATUS.cancelled = False
+        except NotImplementedError:
+            if MPI.Get_version() >= (2,0): raise
 
     def testConstructor(self):
         self.assertRaises(TypeError, MPI.Status, 123)
         self.assertRaises(TypeError, MPI.Status, "abc")
-        
+
     def testCopyConstructor(self):
         self.STATUS.source = 1
         self.STATUS.tag    = 2
@@ -92,6 +108,16 @@ class TestStatus(unittest.TestCase):
             self.assertTrue(flag)
         except NotImplementedError:
             pass
+
+    def testPickle(self):
+        from pickle import dumps, loads
+        self.STATUS.source = 1
+        self.STATUS.tag    = 2
+        self.STATUS.error  = MPI.ERR_ARG
+        status = loads(dumps(self.STATUS))
+        self.assertEqual(status.source, 1)
+        self.assertEqual(status.tag,    2)
+        self.assertEqual(status.error,  MPI.ERR_ARG)
 
 
 if __name__ == '__main__':

@@ -2,16 +2,17 @@
 # Contact: dalcinl@gmail.com
 """Implements MPIPoolExecutor."""
 
+import sys
 import time
 import functools
 import itertools
 import threading
 
-from ._core import Future
-from ._core import Executor
-from ._core import as_completed
+from ._base import Future
+from ._base import Executor
+from ._base import as_completed
 
-from . import _lib
+from . import _core
 
 
 class MPIPoolExecutor(Executor):
@@ -35,12 +36,13 @@ class MPIPoolExecutor(Executor):
         Keyword Args:
             python_exe: Path to Python executable used to spawn workers.
             python_args: Command line arguments to pass to Python executable.
-            mpi_info: Dict or iterable with ``(key, value)`` pairs.
-            globals: Dict or iterable with global variables to set in workers.
+            mpi_info: Mapping or iterable with ``(key, value)`` pairs.
+            globals: Mapping with global variables to set in workers.
             main: If ``False``, do not import ``__main__`` in workers.
             path: List of paths to append to ``sys.path`` in workers.
             wdir: Path to set current working directory in workers.
             env: Environment variables to update ``os.environ`` in workers.
+            use_pkl5: If ``True``, use pickle5 out-of-band for communication.
 
         """
         if max_workers is not None:
@@ -52,7 +54,7 @@ class MPIPoolExecutor(Executor):
             if not callable(initializer):
                 raise TypeError("initializer must be a callable")
             kwargs['initializer'] = initializer
-            kwargs['initargs'] = initargs
+            kwargs['initargs'] = tuple(initargs)
 
         self._options = kwargs
         self._shutdown = False
@@ -60,7 +62,7 @@ class MPIPoolExecutor(Executor):
         self._lock = threading.Lock()
         self._pool = None
 
-    _make_pool = staticmethod(_lib.WorkerPool)
+    _make_pool = staticmethod(_core.WorkerPool)
 
     def _bootstrap(self):
         if self._pool is None:
@@ -68,11 +70,16 @@ class MPIPoolExecutor(Executor):
 
     @property
     def _max_workers(self):
+        return self.num_workers
+
+    @property
+    def num_workers(self):
+        """Number or worker processes."""
         with self._lock:
             if self._broken:
-                return None
+                return 0
             if self._shutdown:
-                return None
+                return 0
             self._bootstrap()
             self._pool.wait()
             return self._pool.size
@@ -106,7 +113,7 @@ class MPIPoolExecutor(Executor):
         # pylint: disable=arguments-differ
         with self._lock:
             if self._broken:
-                raise _lib.BrokenExecutor(self._broken)
+                raise _core.BrokenExecutor(self._broken)
             if self._shutdown:
                 raise RuntimeError("cannot submit after shutdown")
             self._bootstrap()
@@ -114,8 +121,11 @@ class MPIPoolExecutor(Executor):
             task = (fn, args, kwargs)
             self._pool.push((future, task))
             return future
+    if sys.version_info >= (3, 8):  # pragma: no branch
+        submit.__text_signature__ = '($self, fn, /, *args, **kwargs)'
 
-    def map(self, fn, *iterables, timeout=None, chunksize=1, unordered=False):
+    def map(self, fn, *iterables,
+            timeout=None, chunksize=1, unordered=False):
         """Return an iterator equivalent to ``map(fn, *iterables)``.
 
         Args:
@@ -139,7 +149,6 @@ class MPIPoolExecutor(Executor):
             Exception: If ``fn(*args)`` raises for any values.
 
         """
-        # pylint: disable=arguments-differ
         return self.starmap(fn, zip(*iterables), timeout, chunksize, unordered)
 
     def starmap(self, fn, iterable,
@@ -166,7 +175,7 @@ class MPIPoolExecutor(Executor):
             Exception: If ``fn(*args)`` raises for any values.
 
         """
-        # pylint: disable=too-many-arguments
+        # pylint: disable=too-many-arguments,too-many-positional-arguments
         if chunksize < 1:
             raise ValueError("chunksize must be >= 1.")
         if chunksize == 1:
@@ -208,15 +217,25 @@ class MPIPoolExecutor(Executor):
 
 
 def _starmap_helper(submit, function, iterable, timeout, unordered):
+    timer = time.monotonic
+    end_time = sys.float_info.max
     if timeout is not None:
-        timer = getattr(time, 'monotonic', time.time)
         end_time = timeout + timer()
 
     futures = [submit(function, *args) for args in iterable]
     if unordered:
         futures = set(futures)
 
-    def result_iterator():  # pylint: disable=missing-docstring
+    def result(future, timeout=None):
+        try:
+            try:
+                return future.result(timeout)
+            finally:
+                future.cancel()
+        finally:
+            del future
+
+    def result_iterator():
         try:
             if unordered:
                 if timeout is None:
@@ -226,19 +245,18 @@ def _starmap_helper(submit, function, iterable, timeout, unordered):
                 for future in iterator:
                     futures.remove(future)
                     future = [future]
-                    yield future.pop().result()
+                    yield result(future.pop())
             else:
                 futures.reverse()
                 if timeout is None:
                     while futures:
-                        yield futures.pop().result()
+                        yield result(futures.pop())
                 else:
                     while futures:
-                        yield futures.pop().result(end_time - timer())
-        except:
+                        yield result(futures.pop(), end_time - timer())
+        finally:
             while futures:
                 futures.pop().cancel()
-            raise
     return result_iterator()
 
 
@@ -264,7 +282,7 @@ def _chain_from_iterable_of_lists(iterable):
 
 def _starmap_chunks(submit, function, iterable,
                     timeout, unordered, chunksize):
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     function = functools.partial(_apply_chunks, function)
     iterable = _build_chunks(chunksize, iterable)
     result = _starmap_helper(submit, function, iterable,
@@ -289,8 +307,6 @@ class MPICommExecutor:
                 executor.map(...)
     """
 
-    # pylint: disable=too-few-public-methods
-
     def __init__(self, comm=None, root=0, **kwargs):
         """Initialize a new MPICommExecutor instance.
 
@@ -304,11 +320,14 @@ class MPICommExecutor:
 
         """
         if comm is None:
-            comm = _lib.get_comm_world()
+            comm = _core.MPI.COMM_WORLD
         if comm.Is_inter():
-            raise ValueError("Expecting an intracommunicator")
+            raise ValueError("expecting an intracommunicator")
         if root < 0 or root >= comm.Get_size():
-            raise ValueError("Expecting root in range(comm.size)")
+            raise ValueError("expecting root in range(comm.size)")
+        if _core.SharedPool is not None:
+            comm = _core.MPI.COMM_WORLD
+            root = comm.Get_rank()
 
         self._comm = comm
         self._root = root
@@ -317,7 +336,6 @@ class MPICommExecutor:
 
     def __enter__(self):
         """Return `MPIPoolExecutor` instance at the root."""
-        # pylint: disable=protected-access
         if self._executor is not None:
             raise RuntimeError("__enter__")
 
@@ -326,18 +344,9 @@ class MPICommExecutor:
         options = self._options
         executor = None
 
-        if _lib.SharedPool:
-            assert root == 0
+        if comm.Get_rank() == root:
             executor = MPIPoolExecutor(**options)
-            executor._pool = _lib.SharedPool(executor)
-        elif comm.Get_size() == 1:
-            executor = MPIPoolExecutor(**options)
-            executor._pool = _lib.ThreadPool(executor)
-        elif comm.Get_rank() == root:
-            executor = MPIPoolExecutor(**options)
-            executor._pool = _lib.SplitPool(executor, comm, root)
-        else:
-            _lib.server_main_split(comm, root)
+        _core._comm_executor_helper(executor, comm, root)
 
         self._executor = executor
         return executor
@@ -354,11 +363,18 @@ class MPICommExecutor:
             return True
 
 
-class ThreadPoolExecutor(MPIPoolExecutor):  # noqa: D204
+class ThreadPoolExecutor(MPIPoolExecutor):
     """`MPIPoolExecutor` subclass using a pool of threads."""
-    _make_pool = staticmethod(_lib.ThreadPool)
+
+    _make_pool = staticmethod(_core.ThreadPool)
 
 
-class ProcessPoolExecutor(MPIPoolExecutor):  # noqa: D204
+class ProcessPoolExecutor(MPIPoolExecutor):
     """`MPIPoolExecutor` subclass using a pool of processes."""
-    _make_pool = staticmethod(_lib.SpawnPool)
+
+    _make_pool = staticmethod(_core.SpawnPool)
+
+
+def get_comm_workers():
+    """Access an intracommunicator grouping MPI worker processes."""
+    return _core.get_comm_server()

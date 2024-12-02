@@ -1,30 +1,29 @@
-.PHONY: default
+include ../config.mk
+.PHONY: default build test clean
 default: build test clean
 
-PYTHON  = python
-PYTHON_CONFIG = ${PYTHON} ../python-config
+MODULE = helloworld
+SOURCE = $(MODULE).f90
+TARGET = $(MODULE)$(EXT_SUFFIX)
 
-
-SO = ${shell ${PYTHON_CONFIG} --extension-suffix}
-MPIF90 = mpif90
-F2PY = f2py
-ifneq (${MPI_FORTRAN_MOD_DIR},)
-F2PYFLAGS += --f90flags=-I${MPI_FORTRAN_MOD_DIR}
+ldflags :=
+ifndef ldflags # mpich
+ldflags := $(shell $(MPIFORT) -link-info 2> /dev/null)
 endif
-.PHONY: build
-build: helloworld${SO}
-helloworld${SO}: helloworld.f90
-	${F2PY} ${F2PYFLAGS} --f90exec=${MPIF90} -m helloworld -c $<
+ifndef ldflags # openmpi
+ldflags := $(shell $(MPIFORT) -show:link 2> /dev/null)
+endif
+export FC=$(MPIFORT)
+export LDFLAGS=$(wordlist 2,$(words $(ldflags)),$(ldflags))
+
+$(TARGET): $(SOURCE)
+	$(F2PY) -m $(MODULE) -c $<
 
 
-MPIEXEC = mpiexec
-NP_FLAG = -n
-NP = 5
-.PHONY: test
+build: $(TARGET)
+
 test: build
-	${MPIEXEC} ${NP_FLAG} ${NP} ${PYTHON} test.py
+	$(MPIEXEC_PYTHON) test.py
 
-
-.PHONY: clean
 clean:
-	${RM} helloworld${SO}
+	$(RM) -r $(TARGET) __pycache__

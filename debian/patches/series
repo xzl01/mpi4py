@@ -1,9 +1,4 @@
-up_no_modlibs
-fix_docs.patch
+intersphinx_use_local_inventory.patch
 skip_ppc_failing_tests.patch
-skip_failing_test_rma.patch
-skip_spawn_tests.patch
-skip_test_dynproc.patch
-docs_privacy.patch
-io_long_double_i386_2d868d7.patch
+skip_s390x_failing_tests.patch
 skip_testPackUnpackExternal_sparc64.patch

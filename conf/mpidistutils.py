@@ -1,18 +1,25 @@
 # Author:  Lisandro Dalcin
 # Contact: dalcinl@gmail.com
-
 """
 Support for building mpi4py with distutils/setuptools.
 """
+# ruff: noqa: E402
 
 # -----------------------------------------------------------------------------
 
-import sys, os, platform
+import os
+import re
+import sys
+import glob
+import shlex
+import platform
+import warnings
+import contextlib
+
+from distutils import log
 from distutils import sysconfig
 from distutils.util import convert_path
-from distutils.util import split_quoted
 from distutils.file_util import copy_file
-from distutils import log
 
 # Fix missing variables PyPy's  distutils.sysconfig
 if hasattr(sys, 'pypy_version_info'):
@@ -21,8 +28,12 @@ if hasattr(sys, 'pypy_version_info'):
         if name not in config_vars:
             config_vars[name] = os.path.normpath(getattr(sys, name))
     if sys.platform == 'darwin' and 'LDSHARED' in config_vars:
-        if '-undefined' not in config_vars['LDSHARED']:
-            config_vars['LDSHARED'] += ' -undefined dynamic_lookup'
+        ldshared = shlex.split(config_vars['LDSHARED'])
+        while '-shared' in ldshared:
+            ldshared[ldshared.index('-shared')] = '-bundle'
+        if '-undefined' not in ldshared:
+            ldshared.extend('-undefined dynamic_lookup'.split())
+        config_vars['LDSHARED'] = ' '.join(ldshared)
 
 # Workaround distutils.cygwinccompiler.get_versions()
 # failing when the compiler path contains spaces
@@ -35,7 +46,7 @@ if hasattr(cygcc, 'get_versions'):
         def find_executable(exe):
             exe = find_executable_orig(exe)
             if exe and ' ' in exe:
-                exe = '"' + exe + '"'
+                exe = f'"{exe}"'
             return exe
         distutils.spawn.find_executable = find_executable
         versions = cygcc_get_versions()
@@ -58,19 +69,6 @@ def cc_fix_lib_args(self, libs, lib_dirs, rt_lib_dirs):
     return cc_fix_lib_args_orig(self, libs, lib_dirs, rt_lib_dirs)
 CCompiler._fix_compile_args = cc_fix_compile_args
 CCompiler._fix_lib_args = cc_fix_lib_args
-
-# Normalize linker flags for runtime library dirs
-from distutils.unixccompiler import UnixCCompiler
-rpath_option_orig = UnixCCompiler.runtime_library_dir_option
-def rpath_option(compiler, dir):
-    option = rpath_option_orig(compiler, dir)
-    if sys.platform.startswith('linux'):
-        if option.startswith('-R'):
-            option =  option.replace('-R', '-Wl,-rpath,', 1)
-        elif option.startswith('-Wl,-R,'):
-            option =  option.replace('-Wl,-R,', '-Wl,-rpath,', 1)
-    return option
-UnixCCompiler.runtime_library_dir_option = rpath_option
 
 def _fix_env(cmd, i):
     while os.path.basename(cmd[i]) == 'env':
@@ -100,7 +98,7 @@ def fix_compiler_cmd(cc, mpicc):
     i = _fix_xcrun(cc, i)
     while os.path.basename(cc[i]) == 'ccache':
         i = i + 1
-    cc[i:i+1] = split_quoted(mpicc)
+    cc[i:i+1] = shlex.split(mpicc)
 
 def fix_linker_cmd(ld, mpild):
     if not mpild:
@@ -113,7 +111,7 @@ def fix_linker_cmd(ld, mpild):
     i = _fix_xcrun(ld, i)
     while os.path.basename(ld[i]) == 'ccache':
         del ld[i]
-    ld[i:i+1] = split_quoted(mpild)
+    ld[i:i+1] = shlex.split(mpild)
 
 def customize_compiler(
     compiler, lang=None,
@@ -126,7 +124,7 @@ def customize_compiler(
         ld = compiler.linker_exe
         for envvar in ('LDFLAGS', 'CFLAGS', 'CPPFLAGS'):
             if envvar in os.environ:
-                ld += split_quoted(os.environ[envvar])
+                ld += shlex.split(os.environ[envvar])
     if os.environ.get('SOURCE_DATE_EPOCH') is not None:
         # Linker tweaks for reproducible build
         if sys.platform == 'darwin':
@@ -175,10 +173,10 @@ def customize_compiler(
                 'compiler', 'compiler_cxx', 'compiler_so',
                 'linker_so', 'linker_exe',
             ):
-                try: getattr(compiler, attr).remove('-mno-cygwin')
-                except: pass
+                with contextlib.suppress(Exception):
+                    getattr(compiler, attr).remove('-mno-cygwin')
         # Add required define and compiler flags for AMD64
-        if platform.architecture()[0] == '64bit':
+        if platform.architecture(None)[0] == '64bit':
             for attr in (
                 'preprocessor',
                 'compiler', 'compiler_cxx', 'compiler_so',
@@ -186,38 +184,21 @@ def customize_compiler(
             ):
                 getattr(compiler, attr).insert(1, '-DMS_WIN64')
                 getattr(compiler, attr).insert(1, '-m64')
-    if compiler.compiler_type == 'msvc':
-        if not compiler.initialized: compiler.initialize()
-        compiler.ldflags_shared.append('/MANIFEST')
-        compiler.ldflags_shared_debug.append('/MANIFEST')
-        compile_options = (compiler.compile_options,
-                           compiler.compile_options_debug)
-        from distutils.msvc9compiler import VERSION
-        if VERSION < 10.0:
-            for options in compile_options:
-                options.append('/D_USE_DECLSPECS_FOR_SAL=0')
-                options.append('/D_USE_ATTRIBUTES_FOR_SAL=0')
-                options.append('/DMSMPI_NO_SAL')
-        if VERSION <= 10.0:
-            topdir = os.path.dirname(os.path.dirname(__file__))
-            srcdir = os.path.abspath(os.path.join(topdir, 'src'))
-            header = os.path.join(srcdir, 'msvcfix.h')
-            if os.path.exists(header):
-                for options in compile_options:
-                    options.append('/FI%s' % header)
 
 # -----------------------------------------------------------------------------
 
 from mpiconfig import Config
 
 def configuration(command_obj, verbose=True):
-    config = Config()
+    config = Config(log)
     config.setup(command_obj)
     if verbose:
         if config.section and config.filename:
-            log.info("MPI configuration: [%s] from '%s'",
-                     config.section, ','.join(config.filename))
-            config.info(log)
+            config.log.info(
+                "MPI configuration: [%s] from '%s'",
+                config.section, ','.join(config.filename),
+            )
+            config.info()
     return config
 
 def configure_compiler(compiler, config, lang=None):
@@ -269,19 +250,37 @@ def configure_compiler(compiler, config, lang=None):
 # -----------------------------------------------------------------------------
 
 try:
-    from mpiscanner import Scanner
+    from mpiapigen import Generator
 except ImportError:
-    class Scanner(object):
+    class Generator:
         def parse_file(self, *args):
             raise NotImplementedError(
-                "You forgot to grab 'mpiscanner.py'")
+                "You forgot to grab 'mpiapigen.py'")
 
-class ConfigureMPI(object):
+
+@contextlib.contextmanager
+def capture_stderr(filename=os.devnull):
+    stream = sys.stderr
+    file_obj = None
+    fno_save = None
+    try:
+        file_obj = open(filename, 'w')
+        fno_save = os.dup(stream.fileno())
+        os.dup2(file_obj.fileno(), stream.fileno())
+        yield
+    finally:
+        if file_obj is not None:
+            file_obj.close()
+        if fno_save is not None:
+            os.dup2(fno_save, stream.fileno())
+
+
+class ConfigureMPI:
 
     SRCDIR = 'src'
     SOURCES = [os.path.join('mpi4py', 'libmpi.pxd')]
     DESTDIR = os.path.join('src', 'lib-mpi')
-    CONFIG_H = os.path.join('config', 'config.h')
+    CONFIG_H = 'pympiconf.h'
     MISSING_H = 'missing.h'
 
     CONFIGTEST_H = """\
@@ -294,38 +293,42 @@ class ConfigureMPI(object):
 """
 
     def __init__(self, config_cmd):
-        self.scanner = Scanner()
+        self.generator = Generator()
         for filename in self.SOURCES:
             fullname = os.path.join(self.SRCDIR, filename)
-            self.scanner.parse_file(fullname)
+            self.generator.parse_file(fullname)
         self.config_cmd = config_cmd
 
     def run(self):
         results = []
         with open('_configtest.h', 'w') as f:
             f.write(self.CONFIGTEST_H)
-        for node in self.scanner:
+        for node in self.generator:
             name = node.name
             testcode = node.config()
             confcode = node.missing(guard=False)
-            log.info("checking for '%s' ..." % name)
+            log.info("checking for '%s'...", name)
             ok = self.run_test(testcode)
             if not ok:
-                log.info("**** failed check for '%s'" % name)
+                log.info("**** failed check for '%s'", name)
                 with open('_configtest.h', 'a') as f:
                     f.write(confcode)
             results.append((name, ok))
-        try: os.remove('_configtest.h')
-        except OSError: pass
+        try:
+            os.remove('_configtest.h')
+        except OSError:
+            pass
         return results
 
     def gen_test(self, code):
-        body = ['#include "_configtest.h"',
-                'int main(int argc, char **argv) {',
-                '\n'.join(['  ' + line for line in code.split('\n')]),
-                '  (void)argc; (void)argv;',
-                '  return 0;',
-                '}']
+        body = [
+            '#include "_configtest.h"',
+            'int main(int argc, char **argv) {',
+            '\n'.join(['  ' + line for line in code.split('\n')]),
+            '  (void)argc; (void)argv;',
+            '  return 0;',
+            '}',
+        ]
         body = '\n'.join(body) + '\n'
         return body
 
@@ -347,9 +350,9 @@ class ConfigureMPI(object):
         config_h  = os.path.join(destdir, self.CONFIG_H)
         missing_h = os.path.join(destdir, self.MISSING_H)
         log.info("writing '%s'", config_h)
-        self.scanner.dump_config_h(config_h, results)
+        self.generator.dump_config_h(config_h, results)
         log.info("writing '%s'", missing_h)
-        self.scanner.dump_missing_h(missing_h, None)
+        self.generator.dump_missing_h(missing_h, None)
 
 # -----------------------------------------------------------------------------
 
@@ -359,21 +362,6 @@ cmd_mpi_opts = [
      "MPI linker command, "
      "overridden by environment variable 'MPILD' "
      "(defaults to 'mpicc' or 'mpicxx' if any is available)"),
-
-    ('mpif77=',  None,
-     "MPI F77 compiler command, "
-     "overridden by environment variable 'MPIF77' "
-     "(defaults to 'mpif77' if available)"),
-
-    ('mpif90=',  None,
-     "MPI F90 compiler command, "
-     "overridden by environment variable 'MPIF90' "
-     "(defaults to 'mpif90' if available)"),
-
-    ('mpifort=',  None,
-     "MPI Fortran compiler command, "
-     "overridden by environment variable 'MPIFORT' "
-     "(defaults to 'mpifort' if available)"),
 
     ('mpicxx=',  None,
      "MPI C++ compiler command, "
@@ -386,12 +374,11 @@ cmd_mpi_opts = [
      "(defaults to 'mpicc' if available)"),
 
     ('mpi=',     None,
-     "specify a configuration section, "
-     "and an optional list of configuration files "
-     + "(e.g. --mpi=section,file1" + os.path.pathsep + "file2), " +
+     "specify a ini-style configuration file and section "
+     "(e.g. --mpi=filename or --mpi=filename:section), "
      "to look for MPI includes/libraries, "
      "overridden by environment variable 'MPICFG' "
-     "(defaults to section 'mpi' in configuration file 'mpi.cfg')"),
+     "(defaults to configuration file 'mpi.cfg' and section 'mpi')"),
 
     ('configure', None,
      "exhaustive test for checking missing MPI constants/types/functions"),
@@ -425,15 +412,13 @@ except ImportError:
     setuptools = None
 
 def import_command(cmd):
-    try:
-        from importlib import import_module
-    except ImportError:
-        import_module = lambda n:  __import__(n, fromlist=[None])
-    try:
-        if not setuptools: raise ImportError
-        return import_module('setuptools.command.' + cmd)
-    except ImportError:
-        return import_module('distutils.command.' + cmd)
+    from importlib import import_module
+    if setuptools:
+        try:
+            return import_module('setuptools.command.' + cmd)
+        except ImportError:
+            pass
+    return import_module('distutils.command.' + cmd)
 
 if setuptools:
     from setuptools import Distribution as cls_Distribution
@@ -447,11 +432,8 @@ else:
 cmd_config  = import_command('config')
 cmd_build   = import_command('build')
 cmd_install = import_command('install')
-cmd_sdist   = import_command('sdist')
 cmd_clean   = import_command('clean')
 
-cmd_build_py     = import_command('build_py')
-cmd_build_clib   = import_command('build_clib')
 cmd_build_ext    = import_command('build_ext')
 cmd_install_lib  = import_command('install_lib')
 cmd_install_data = import_command('install_data')
@@ -459,8 +441,22 @@ cmd_install_data = import_command('install_data')
 from distutils.errors import DistutilsError
 from distutils.errors import DistutilsSetupError
 from distutils.errors import DistutilsPlatformError
-from distutils.errors import DistutilsOptionError
 from distutils.errors import CCompilerError
+
+try:
+    from packaging.version import Version
+except ImportError:
+    try:
+        from setuptools.extern.packaging.version import Version
+    except ImportError:
+        from distutils.version import StrictVersion as Version
+try:
+    from setuptools.modified import newer_group
+except ImportError:
+    try:
+        from setuptools.dep_util import newer_group
+    except ImportError:
+        from distutils.dep_util import newer_group
 
 # -----------------------------------------------------------------------------
 
@@ -532,13 +528,123 @@ def setup(**attrs):
     cmdclass = attrs['cmdclass']
     for cmd in (
         config, build, install, clean,
-        test, sdist, build_py, build_clib,
         build_src, build_ext, build_exe,
         install_lib, install_data, install_exe,
     ):
         if cmd.__name__ not in cmdclass:
             cmdclass[cmd.__name__] = cmd
     return fcn_setup(**attrs)
+
+# --------------------------------------------------------------------
+
+def with_coverage():
+    return bool(os.environ.get('MPI4PY_COVERAGE_PLUGIN'))
+
+# --------------------------------------------------------------------
+
+# Cython
+
+def cython_req():
+    confdir = os.path.dirname(__file__)
+    basename = 'requirements-build-cython.txt'
+    with open(os.path.join(confdir, basename)) as f:
+        m = re.search(r'cython\s*>=+\s*(.*)', f.read().strip())
+    cython_version = m.groups()[0]
+    return cython_version
+
+
+def cython_chk(VERSION, verbose=True):
+    #
+    def warn(message):
+        if not verbose:
+            return
+        ruler, ws, nl = "*"*80, " " ,"\n"
+        pyexe = sys.executable
+        advise = f"$ {pyexe} -m pip install --upgrade cython"
+        def printer(*s): print(*s, file=sys.stderr)
+        printer(ruler, nl)
+        printer(ws, message, nl)
+        printer(ws, ws, advise, nl)
+        printer(ruler)
+    #
+    try:
+        import Cython
+    except ImportError:
+        warn("You need Cython to generate C source files.")
+        return False
+    #
+    CYTHON_VERSION = Cython.__version__
+    m = re.match(r"(\d+\.\d+(?:\.\d+)?).*", CYTHON_VERSION)
+    if not m:
+        warn(f"Cannot parse Cython version string {CYTHON_VERSION!r}")
+        return False
+    REQUIRED = Version(VERSION)
+    PROVIDED = Version(m.groups()[0])
+    if PROVIDED < REQUIRED:
+        warn(f"You need Cython >= {VERSION} (you have version {CYTHON_VERSION})")
+        return False
+    #
+    if verbose:
+        log.info("using Cython %s", CYTHON_VERSION)
+    return True
+
+
+def cython_run(
+    source, target=None,
+    depends=(), includes=(),
+    workdir=None, force=False,
+    VERSION="0.0",
+):
+    if target is None:
+        target = os.path.splitext(source)[0]+'.c'
+    cwd = os.getcwd()
+    try:
+        if workdir:
+            os.chdir(workdir)
+        alldeps = [source]
+        for dep in depends:
+            alldeps += glob.glob(dep)
+        if not (force or newer_group(alldeps, target, 'newer')):
+            log.debug("skipping '%s' -> '%s' (up-to-date)", source, target)
+            return
+    finally:
+        os.chdir(cwd)
+    require = f'Cython >= {VERSION}'
+    if not cython_chk(VERSION, verbose=False) and setuptools:
+        if sys.modules.get('Cython'):
+            removed = getattr(sys.modules['Cython'], '__version__', '')
+            log.info("removing Cython %s from sys.modules", removed)
+            pkgname = re.compile(r'cython(\.|$)', re.IGNORECASE)
+            for modname in list(sys.modules.keys()):
+                if pkgname.match(modname):
+                    del sys.modules[modname]
+        try:
+            install_setup_requires = setuptools._install_setup_requires
+            with warnings.catch_warnings():
+                category = setuptools.SetuptoolsDeprecationWarning
+                warnings.simplefilter('ignore', category)
+                log.info("fetching build requirement '%s'", require)
+                install_setup_requires({'setup_requires': [require]})
+        except Exception:
+            log.info("failed to fetch build requirement '%s'", require)
+    if not cython_chk(VERSION):
+        raise DistutilsError(f"missing build requirement {require!r}")
+    #
+    log.info("cythonizing '%s' -> '%s'", source, target)
+    from cythonize import cythonize
+    args = []
+    if with_coverage():
+        args += ['-X', 'linetrace=True']
+    if includes:
+        args += [f'-I{incdir}' for incdir in includes]
+    if workdir:
+        args += ['--working', workdir]
+    args += [source]
+    if target:
+        args += ['--output-file', target]
+    err = cythonize(args)
+    if err:
+        raise DistutilsError(f"Cython failure: {source!r} -> {target!r}")
 
 # -----------------------------------------------------------------------------
 
@@ -578,123 +684,316 @@ class config(cmd_config.config):
                     self.temp_files.append(fn)
         cmd_config.config._clean(self, *a, **kw)
 
-    def check_header (self, header, headers=None, include_dirs=None):
-        if headers is None: headers = []
-        log.info("checking for header '%s' ..." % header)
+    def check_header(
+        self, header, headers=None, include_dirs=None,
+    ):
+        if headers is None:
+            headers = []
+        log.info("checking for header '%s' ...", header)
         body = "int main(int n, char**v) { (void)n; (void)v; return 0; }"
-        ok = self.try_compile(body, list(headers) + [header], include_dirs)
+        ok = self.try_compile(body, [*headers, header], include_dirs)
         log.info(ok and 'success!' or 'failure.')
         return ok
 
-    def check_macro (self, macro, headers=None, include_dirs=None):
-        log.info("checking for macro '%s' ..." % macro)
-        body = ("#ifndef %s\n"
-                "#error macro '%s' not defined\n"
-                "#endif\n") % (macro, macro)
-        body += "int main(int n, char**v) { (void)n; (void)v; return 0; }"
+    def check_macro(
+        self, macro, headers=None, include_dirs=None,
+    ):
+        log.info("checking for macro '%s' ...", macro)
+        body = [
+            f"#ifndef {macro}",
+            f"#error macro '{macro}' not defined",
+            r"#endif",
+            r"int main(int n, char**v) { (void)n; (void)v; return 0; }"
+        ]
+        body = "\n".join(body) + "\n"
         ok = self.try_compile(body, headers, include_dirs)
         return ok
 
-    def check_library (self, library, library_dirs=None,
-                   headers=None, include_dirs=None,
-                   other_libraries=[], lang="c"):
+    def check_library(
+        self, library, library_dirs=None,
+        headers=None, include_dirs=None,
+        other_libraries=(), lang="c",
+    ):
         if sys.platform == "darwin":
             self.compiler.linker_exe.append('-flat_namespace')
             self.compiler.linker_exe.append('-undefined')
             self.compiler.linker_exe.append('suppress')
-        log.info("checking for library '%s' ..." % library)
+        log.info("checking for library '%s' ...", library)
         body = "int main(int n, char**v) { (void)n; (void)v; return 0; }"
-        ok = self.try_link(body,  headers, include_dirs,
-                           [library]+other_libraries, library_dirs,
-                           lang=lang)
+        ok = self.try_link(
+            body,  headers, include_dirs,
+            [library, *other_libraries], library_dirs,
+            lang=lang,
+        )
         if sys.platform == "darwin":
             self.compiler.linker_exe.remove('-flat_namespace')
             self.compiler.linker_exe.remove('-undefined')
             self.compiler.linker_exe.remove('suppress')
         return ok
 
-    def check_function (self, function,
-                        headers=None, include_dirs=None,
-                        libraries=None, library_dirs=None,
-                        decl=0, call=0, lang="c"):
-        log.info("checking for function '%s' ..." % function)
+    def check_function(
+        self, function,
+        headers=None, include_dirs=None,
+        libraries=None, library_dirs=None,
+        decl=0, call=0, lang="c",
+    ):
+        log.info("checking for function '%s' ...", function)
         body = []
         if decl:
-            if call: proto = "int %s (void);"
-            else:    proto = "int %s;"
+            if call:
+                proto = f"int {function} (void);"
+            else:
+                proto = f"int {function};"
             if lang == "c":
                 proto = "\n".join([
-                        "#ifdef __cplusplus",
-                        "extern \"C\"",
-                        "#endif", proto])
-            body.append(proto % function)
-        body.append(    "int main (int n, char**v) {")
+                    "#ifdef __cplusplus",
+                    "extern {}".format('"C"'),
+                    "#endif",
+                    proto
+                ])
+            body.append(proto)
+        body.append(    r"int main (int n, char**v) {")
         if call:
-            body.append("  (void)%s();" % function)
+            body.append(f"  (void){function}();")
         else:
-            body.append("  %s;" % function)
-        body.append(    "  (void)n; (void)v;")
-        body.append(    "  return 0;")
-        body.append(    "}")
+            body.append(f"  {function};")
+        body.append(    r"  (void)n; (void)v;")
+        body.append(    r"  return 0;")
+        body.append(    r"}")
         body = "\n".join(body) + "\n"
-        ok = self.try_link(body, headers, include_dirs,
-                           libraries, library_dirs, lang=lang)
+        ok = self.try_link(
+            body, headers, include_dirs,
+            libraries, library_dirs,
+            lang=lang,
+        )
         return ok
 
-    def check_symbol (self, symbol, type="int",
-                      headers=None, include_dirs=None,
-                      libraries=None, library_dirs=None,
-                      decl=0, lang="c"):
-        log.info("checking for symbol '%s' ..." % symbol)
+    def check_symbol(
+        self, symbol, type="int",
+        headers=None, include_dirs=None,
+        libraries=None, library_dirs=None,
+        decl=0, lang="c",
+    ):
+        log.info("checking for symbol '%s' ...", symbol)
         body = []
         if decl:
-            body.append("%s %s;" % (type, symbol))
-        body.append("int main (int n, char**v) {")
-        body.append("  %s s; s = %s; (void)s;" % (type, symbol))
-        body.append("  (void)n; (void)v;")
-        body.append("  return 0;")
-        body.append("}")
+            body.append(f"{type} {symbol};")
+        body.append(r"int main (int n, char**v) {")
+        body.append(f"  {type} s; s = {symbol}; (void)s;")
+        body.append(r"  (void)n; (void)v;")
+        body.append(r"  return 0;")
+        body.append(r"}")
         body = "\n".join(body) + "\n"
-        ok = self.try_link(body, headers, include_dirs,
-                           libraries, library_dirs, lang=lang)
+        ok = self.try_link(
+            body, headers, include_dirs,
+            libraries, library_dirs,
+            lang=lang,
+        )
         return ok
 
-    def check_function_call (self, function, args='',
-                             headers=None, include_dirs=None,
-                             libraries=None, library_dirs=None,
-                             lang="c"):
-        log.info("checking for function '%s' ..." % function)
+    def check_function_call(
+        self, function, args='',
+        headers=None, include_dirs=None,
+        libraries=None, library_dirs=None,
+        lang="c",
+    ):
+        log.info("checking for function '%s' ...", function)
         body = []
-        body.append("int main (int n, char**v) {")
-        body.append("  (void)%s(%s);" % (function, args))
-        body.append("  (void)n; (void)v;")
-        body.append("  return 0;")
-        body.append("}")
+        body.append(r"int main (int n, char**v) {")
+        body.append(f"  (void){function}({args});")
+        body.append(r"  (void)n; (void)v;")
+        body.append(r"  return 0;")
+        body.append(r"}")
         body = "\n".join(body) + "\n"
-        ok = self.try_link(body, headers, include_dirs,
-                           libraries, library_dirs, lang=lang)
+        ok = self.try_link(
+            body, headers, include_dirs,
+            libraries, library_dirs,
+            lang=lang,
+        )
         return ok
 
-    check_hdr  = check_header
-    check_lib  = check_library
-    check_func = check_function
-    check_sym  = check_symbol
-
-    def run (self):
-        #
+    def run(self):
         config = configuration(self, verbose=True)
         # test MPI C compiler
-        self.compiler = getattr(
-            self.compiler, 'compiler_type', self.compiler)
+        self.compiler = getattr(self.compiler, 'compiler_type', self.compiler)
         self._check_compiler()
         configure_compiler(self.compiler, config, lang='c')
         self.try_link(ConfigTest, headers=['mpi.h'], lang='c')
         # test MPI C++ compiler
-        self.compiler = getattr(
-            self.compiler, 'compiler_type', self.compiler)
+        self.compiler = getattr(self.compiler, 'compiler_type', self.compiler)
         self._check_compiler()
         configure_compiler(self.compiler, config, lang='c++')
         self.try_link(ConfigTest, headers=['mpi.h'], lang='c++')
+
+
+
+def configure_dl(ext, config_cmd):
+    log.info("checking for dlopen() availability ...")
+    dlfcn = config_cmd.check_header('dlfcn.h')
+    libdl = config_cmd.check_library('dl')
+    libs = ['dl'] if libdl else None
+    dlopen = config_cmd.check_function(
+        'dlopen', libraries=libs, decl=1, call=1,
+    )
+    if dlfcn:
+        ext.define_macros += [('HAVE_DLFCN_H', 1)]
+    if dlopen:
+        ext.define_macros += [('HAVE_DLOPEN', 1)]
+
+
+def configure_mpi(ext, config_cmd):
+    from textwrap import dedent
+    headers = ['stdlib.h', 'mpi.h']
+    #
+    log.info("checking for MPI compile and link ...")
+    ConfigTest = dedent("""\
+    int main(int argc, char **argv)
+    {
+      (void)MPI_Init(&argc, &argv);
+      (void)MPI_Finalize();
+      return 0;
+    }
+    """)
+    errmsg = [
+        "Cannot {} MPI programs. Check your configuration!!!",
+        "Installing mpi4py requires a working MPI implementation.",
+    ]
+    if sys.platform == 'linux':
+        errmsg += [
+            "If you are running on a supercomputer or cluster, check with",
+            "the system administrator or refer to the system user guide.",
+            "Otherwise, if you are running on a laptop or desktop computer,",
+            "your may be missing the MPICH or Open MPI development package:",
+            "* On Fedora/RHEL systems, run:",
+            "  $ sudo dnf install mpich-devel     # for MPICH",
+            "  $ sudo dnf install openmpi-devel   # for Open MPI",
+            "* On Debian/Ubuntu systems, run:",
+            "  $ sudo apt install libmpich-dev    # for MPICH",
+            "  $ sudo apt install libopenmpi-dev  # for Open MPI",
+        ]
+    if sys.platform == 'darwin':
+        errmsg += [
+            "Install MPICH or Open MPI with Homebrew or MacPorts:"
+            "  $ brew install mpich|openmpi  # Homebrew",
+            "  $ port install mpich|openmpi  # MacPorts",
+        ]
+    if sys.platform == 'win32':
+        errmsg += [
+            "Please install *Intel MPI* or *Microsoft MPI*."
+        ]
+    ok = config_cmd.try_compile(ConfigTest, headers=headers)
+    if not ok:
+        message = "\n".join(errmsg).format("compile")
+        raise DistutilsPlatformError(message)
+    ok = config_cmd.try_link(ConfigTest, headers=headers)
+    if not ok:
+        message = errmsg[0].format("link")
+        raise DistutilsPlatformError(message)
+    #
+    impls = ("OPEN_MPI", "MSMPI_VER")
+    tests = [f"defined({macro})" for macro in impls]
+    tests += ["(defined(MPICH_NAME)&&(MPICH_NAME>=3))"]
+    tests += ["(defined(MPICH_NAME)&&(MPICH_NAME==2))"]
+    tests = "||".join(tests)
+    ConfigTestAPI = dedent(f"""\
+    #if !({tests})
+    #error "Unknown MPI implementation"
+    #endif
+    """)
+    ConfigTestABI = dedent("""\
+    #if !(defined(MPI_ABI_VERSION)&&(MPI_ABI_VERSION>=1))
+    #error "MPI ABI not supported"
+    #endif
+    """)
+    with capture_stderr():
+        log.info("checking for MPI ABI support ...")
+        mpiabi = config_cmd.try_compile(ConfigTestABI, headers=headers)
+    config = os.environ.get('MPI4PY_BUILD_CONFIGURE') or None
+    config = getattr(config_cmd, 'configure', None) or config
+    if not mpiabi and not config:
+        with capture_stderr():
+            ok = config_cmd.try_compile(ConfigTestAPI, headers=headers)
+            config = not ok
+    if config:
+        guard = "HAVE_PYMPICONF_H"
+        with capture_stderr():
+            ok = config_cmd.check_macro(guard)
+        config = not ok
+        if config:
+            log.info("checking for missing MPI functions/symbols ...")
+            configure = ConfigureMPI(config_cmd)
+            with capture_stderr():
+                results = configure.run()
+            configure.dump(results)
+            ext.define_macros += [(guard, 1)]
+    elif not mpiabi:
+        log.info("checking for missing MPI functions/symbols ...")
+        for function, arglist in (
+            ('MPI_Type_create_f90_integer',   '0,(MPI_Datatype*)0'),
+            ('MPI_Type_create_f90_real',    '0,0,(MPI_Datatype*)0'),
+            ('MPI_Type_create_f90_complex', '0,0,(MPI_Datatype*)0'),
+            ('MPI_Status_c2f', '(MPI_Status*)0,(MPI_Fint*)0'),
+            ('MPI_Status_f2c', '(MPI_Fint*)0,(MPI_Status*)0'),
+        ):
+            with capture_stderr():
+                ok = config_cmd.check_function_call(
+                    function, arglist, headers=headers,
+                )
+            if not ok:
+                macro = 'PyMPI_MISSING_' + function
+                ext.define_macros += [(macro, 1)]
+    #
+    if not mpiabi and os.name == 'posix':
+        configure_dl(ext, config_cmd)
+
+
+def configure_pyexe(exe, _config_cmd):
+    if sys.platform.startswith('win'):
+        return
+    if (sys.platform == 'darwin' and
+        ('Anaconda' in sys.version or
+         'Continuum Analytics' in sys.version)):
+        py_version = sysconfig.get_python_version()
+        py_abiflags = getattr(sys, 'abiflags', '')
+        exe.libraries += ['python' + py_version + py_abiflags]
+        return
+    #
+    pyver = sys.version_info[:2]
+    cfg_vars = sysconfig.get_config_vars()
+    libraries = []
+    library_dirs = []
+    runtime_dirs = []
+    link_args = []
+    py_enable_shared = cfg_vars.get('Py_ENABLE_SHARED')
+    if pyver >= (3, 8) or not py_enable_shared:
+        py_version = sysconfig.get_python_version()
+        py_abiflags = getattr(sys, 'abiflags', '')
+        libraries = ['python' + py_version + py_abiflags]
+        if hasattr(sys, 'pypy_version_info'):
+            py_tag = py_version[0].replace('2', '')
+            libraries = [f'pypy{py_tag}-c']
+    if sys.platform == 'darwin':
+        fwkdir = cfg_vars.get('PYTHONFRAMEWORKDIR')
+        if (fwkdir and fwkdir != 'no-framework' and
+            fwkdir in cfg_vars.get('LINKFORSHARED', '')):
+            del libraries[:]
+    #
+    libdir = shlex.split(cfg_vars.get('LIBDIR', ''))
+    libpl = shlex.split(cfg_vars.get('LIBPL', ''))
+    if py_enable_shared:
+        library_dirs += libdir
+        if sys.exec_prefix != '/usr':
+            runtime_dirs += libdir
+    else:
+        library_dirs += libdir
+        library_dirs += libpl
+    for var in ('LIBS', 'MODLIBS', 'SYSLIBS', 'LDLAST'):
+        link_args += shlex.split(cfg_vars.get(var, ''))
+    #
+    exe.libraries += libraries
+    exe.library_dirs += library_dirs
+    exe.runtime_library_dirs += runtime_dirs
+    exe.extra_link_args += link_args
 
 
 class build(cmd_build.build):
@@ -726,10 +1025,11 @@ class build(cmd_build.build):
     def has_executables (self):
         return self.distribution.has_executables()
 
-    sub_commands = \
-        [('build_src', lambda *args: True)] + \
-        cmd_build.build.sub_commands + \
-        [('build_exe', has_executables)]
+    sub_commands = [
+        ('build_src', lambda *_: True),
+         *cmd_build.build.sub_commands,
+        ('build_exe', has_executables),
+    ]
 
     # XXX disable build_exe subcommand !!!
     del sub_commands[-1]
@@ -754,418 +1054,14 @@ class build_src(Command):
                                    ('force', 'force'),
                                    )
     def run(self):
-        pass
-
-
-if sys.version_info[0] >= 3:
-
-    build_py = cmd_build_py.build_py
-
-else:
-
-    def get_fixers_3to2():
-        import re
-        import lib3to2
-        try:
-            loader =  lib3to2.__loader__
-            files = loader._files.keys()
-        except AttributeError:
-            from lib3to2.build import refactor
-            return refactor.get_fixers_from_package('lib3to2.fixes')
-        fixers = []
-        pattern = re.compile(r'lib3to2/fixes/(fix_.*)\.py$')
-        for f in files:
-            m = pattern.match(f)
-            if m:
-                fixer = 'lib3to2.fixes.' + m.groups()[0]
-                fixers.append(fixer)
-        return fixers
-
-
-    def get_fixers_extra():
-        from lib2to3 import fixer_base
-        from lib2to3.fixer_util import Name
-
-        class FixModSpecAttr(fixer_base.BaseFix):
-
-            PATTERN = """
-                      power< name='__spec__' trailer< '.' attr=('parent') > >
-                      """
-            MAP = {
-                'parent': '__package__',
-            }
-
-            def transform(self, node, results):
-                name = results["name"]
-                attr = results["attr"]
-                newval = self.MAP[attr.value]
-                node.replace(Name(newval, prefix=name.prefix))
-
-        import sys
-        import lib3to2.fixes
-        modname = lib3to2.fixes.__name__ + '.fix_mod_spec_attr'
-        module = type(sys)(modname)
-        module.FixModSpecAttr = FixModSpecAttr
-        setattr(lib3to2.fixes, modname, module)
-        sys.modules[modname] = module
-        return [modname]
-
-
-    def run_3to2(files, fixer_names=None, options=None,
-                 explicit=None, unwanted=None):
-        from lib3to2.fixes import fix_imports
-        from lib3to2.build import DistutilsRefactoringTool
-        if not files:
-            return
-        if fixer_names is None:
-            fixer_names = get_fixers_3to2()
-        for fixer in get_fixers_extra():
-            fixer_names.append(fixer)
-        if unwanted is not None:
-            fixer_names = list(fixer_names)
-            for fixer in unwanted:
-                if fixer in fixer_names:
-                    fixer_names.remove(fixer)
-        r = DistutilsRefactoringTool(
-            fixer_names, options=options, explicit=explicit)
-        try:
-            fix_imports.MAPPING['queue'] = 'queue'
-            r.refactor(files, write=True)
-        finally:
-            fix_imports.MAPPING['queue'] = 'Queue'
-
-
-    class Mixin3to2:
-
-        fixer_names = None
-
-        options = None
-
-        explicit = [
-            'lib3to2.fixes.fix_printfunction',
-        ]
-
-        unwanted  = [
-            'lib3to2.fixes.fix_str',
-            'lib3to2.fixes.fix_with',
-            'lib3to2.fixes.fix_print',
-            'lib3to2.fixes.fix_except',
-            'lib3to2.fixes.fix_absimport',
-        ]
-
-        def run_3to2(self, files):
-            return run_3to2(files, self.fixer_names, self.options,
-                            self.explicit, self.unwanted)
-
-
-    class build_py(cmd_build_py.build_py, Mixin3to2):
-
-        def run(self):
-            self.updated_files = []
-
-            # build_py code
-            if self.py_modules:
-                self.build_modules()
-            if self.packages:
-                self.build_packages()
-                self.build_package_data()
-
-            # 3to2
-            self.run_3to2(self.updated_files)
-
-            # build_py code
-            self.byte_compile(self.get_outputs(include_bytecode=0))
-
-        def build_module(self, module, module_file, package):
-            super_build_module = cmd_build_py.build_py.build_module
-            ret = super_build_module(self, module, module_file, package)
-            if ret[1]: self.updated_files.append(ret[0])
-            return ret
-
-
-# Command class to build libraries
-
-class build_clib(cmd_build_clib.build_clib):
-
-    user_options = [
-        ('build-clib-a=', 's',
-         "directory to build C/C++ static libraries to"),
-        ('build-clib-so=', 's',
-         "directory to build C/C++ shared libraries to"),
-        ]
-
-    user_options += cmd_build_clib.build_clib.user_options + cmd_mpi_opts
-
-    def initialize_options (self):
-        self.libraries = None
-        self.libraries_a = []
-        self.libraries_so = []
-
-        self.library_dirs = None
-        self.rpath = None
-        self.link_objects = None
-
-        self.build_lib = None
-        self.build_clib_a = None
-        self.build_clib_so = None
-        cmd_build_clib.build_clib.initialize_options(self)
-        cmd_initialize_mpi_options(self)
-
-    def finalize_options (self):
-        cmd_build_clib.build_clib.finalize_options(self)
-        build_cmd = self.get_finalized_command('build')
-        if isinstance(build_cmd,  build):
-            cmd_set_undefined_mpi_options(self, 'build')
-        #
-        self.set_undefined_options('build',
-                                   ('build_lib', 'build_lib'),
-                                   ('build_lib', 'build_clib_a'),
-                                   ('build_lib', 'build_clib_so'))
-        #
-        if self.libraries:
-            libraries = self.libraries[:]
-            self.libraries = []
-            self.check_library_list (libraries)
-            for i, lib in enumerate(libraries):
-                if isinstance(lib, Library):
-                    if lib.kind == "static":
-                        self.libraries_a.append(lib)
-                    else:
-                        self.libraries_so.append(lib)
-                else:
-                    self.libraries.append(lib)
-
-    def check_library_list (self, libraries):
-        ListType, TupleType = type([]), type(())
-        if not isinstance(libraries, ListType):
-            raise DistutilsSetupError(
-                "'libraries' option must be a list of "
-                "Library instances or 2-tuples")
-        for lib in libraries:
-            #
-            if isinstance(lib, Library):
-                lib_name = lib.name
-                build_info = lib.__dict__
-            elif isinstance(lib, TupleType) and len(lib) == 2:
-                lib_name, build_info = lib
-            else:
-                raise DistutilsSetupError(
-                    "each element of 'libraries' option must be an "
-                    "Library instance or 2-tuple")
-            #
-            if not isinstance(lib_name, str):
-                raise DistutilsSetupError(
-                    "first element of each tuple in 'libraries' "
-                    "must be a string (the library name)")
-            if '/' in lib_name or (os.sep != '/' and os.sep in lib_name):
-                raise DistutilsSetupError(
-                    "bad library name '%s': "
-                    "may not contain directory separators" % lib[0])
-            if not isinstance(build_info, dict):
-                raise DistutilsSetupError(
-                    "second element of each tuple in 'libraries' "
-                    "must be a dictionary (build info)")
-            lib_type = build_info.get('kind', 'static')
-            if lib_type not in ('static', 'shared', 'dylib'):
-                raise DistutilsSetupError(
-                    "in 'kind' option (library '%s'), "
-                    "'kind' must be one of "
-                    " \"static\", \"shared\", \"dylib\"" % lib_name)
-            sources = build_info.get('sources')
-            if (sources is None or
-                type(sources) not in (ListType, TupleType)):
-                raise DistutilsSetupError(
-                    "in 'libraries' option (library '%s'), "
-                    "'sources' must be present and must be "
-                    "a list of source filenames" % lib_name)
-            depends = build_info.get('depends')
-            if (depends is not None and
-                type(depends) not in (ListType, TupleType)):
-                raise DistutilsSetupError(
-                    "in 'libraries' option (library '%s'), "
-                    "'depends' must be a list "
-                    "of source filenames" % lib_name)
-
-    def run (self):
-        cmd_build_clib.build_clib.run(self)
-        if (not self.libraries_a and
-            not self.libraries_so):
-            return
-        #
-        from distutils.ccompiler import new_compiler
-        self.compiler = new_compiler(compiler=self.compiler,
-                                     dry_run=self.dry_run,
-                                     force=self.force)
-        #
-        if self.define is not None:
-            for (name, value) in self.define:
-                self.compiler.define_macro(name, value)
-        if self.undef is not None:
-            for macro in self.undef:
-                self.compiler.undefine_macro(macro)
-        if self.include_dirs is not None:
-            self.compiler.set_include_dirs(self.include_dirs)
-        if self.library_dirs is not None:
-            self.compiler.set_library_dirs(self.library_dirs)
-        if self.rpath is not None:
-            self.compiler.set_runtime_library_dirs(self.rpath)
-        if self.link_objects is not None:
-            self.compiler.set_link_objects(self.link_objects)
-        #
-        config = configuration(self, verbose=True)
-        configure_compiler(self.compiler, config)
-        if self.compiler.compiler_type == "unix":
-            try: del self.compiler.shared_lib_extension
-            except: pass
-        #
-        self.build_libraries(self.libraries)
-        self.build_libraries(self.libraries_a)
-        self.build_libraries(self.libraries_so)
-
-    def build_libraries (self, libraries):
-        for lib in libraries:
-            # old-style
-            if not isinstance(lib, Library):
-                cmd_build_clib.build_clib.build_libraries(self, [lib])
-                continue
-            # new-style
-            try:
-                self.build_library(lib)
-            except (DistutilsError, CCompilerError):
-                if not lib.optional: raise
-                e = sys.exc_info()[1]
-                self.warn('%s' % e)
-                self.warn('building optional library "%s" failed' % lib.name)
-
-    def config_library (self, lib):
-        if lib.configure:
-            config_cmd = self.get_finalized_command('config')
-            config_cmd.compiler = self.compiler # fix compiler
-            return lib.configure(lib, config_cmd)
-
-    def build_library(self, lib):
-        from distutils.dep_util import newer_group
-
-        sources = [convert_path(p) for p in lib.sources]
-        depends = [convert_path(p) for p in lib.depends]
-        depends = sources + depends
-
-        if lib.kind == "static":
-            build_dir = self.build_clib_a
-        else:
-            build_dir = self.build_clib_so
-        lib_fullpath = self.get_lib_fullpath(lib, build_dir)
-
-        if not (self.force or newer_group(depends, lib_fullpath, 'newer')):
-            log.debug("skipping '%s' %s library (up-to-date)",
-                      lib.name, lib.kind)
-            return
-
-        ok = self.config_library(lib)
-        log.info("building '%s' %s library", lib.name, lib.kind)
-
-        # First, compile the source code to object files in the library
-        # directory.  (This should probably change to putting object
-        # files in a temporary build directory.)
-        macros = lib.define_macros[:]
-        for undef in lib.undef_macros:
-            macros.append((undef,))
-
-        objects = self.compiler.compile(
-            sources,
-            depends=lib.depends,
-            output_dir=self.build_temp,
-            macros=macros,
-            include_dirs=lib.include_dirs,
-            extra_preargs=None,
-            extra_postargs=lib.extra_compile_args,
-            debug=self.debug,
+        sources = getattr(self, 'sources', [])
+        require = cython_req()
+        for source in sources:
+            cython_run(
+                **source,
+                force=self.force,
+                VERSION=require,
             )
-
-        if lib.kind == "static":
-            # Now "link" the object files together
-            # into a static library.
-            self.compiler.create_static_lib(
-                objects,
-                lib.name,
-                output_dir=os.path.dirname(lib_fullpath),
-                debug=self.debug,
-                )
-        else:
-            extra_objects = lib.extra_objects[:]
-            export_symbols = lib.export_symbols[:]
-            extra_link_args = lib.extra_link_args[:]
-            extra_preargs = None
-            objects.extend(extra_objects)
-            if (self.compiler.compiler_type == 'msvc' and
-                export_symbols is not None):
-                output_dir = os.path.dirname(lib_fullpath)
-                implib_filename = self.compiler.library_filename(lib.name)
-                implib_file = os.path.join(output_dir, lib_fullpath)
-                extra_link_args.append ('/IMPLIB:' + implib_file)
-            # Detect target language, if not provided
-            src_language = self.compiler.detect_language(sources)
-            language = (lib.language or src_language)
-            # Now "link" the object files together
-            # into a shared library.
-            if sys.platform == 'darwin':
-                linker_so = self.compiler.linker_so[:]
-                while '-bundle' in self.compiler.linker_so:
-                    pos = self.compiler.linker_so.index('-bundle')
-                    self.compiler.linker_so[pos] = '-shared'
-                install_name = os.path.basename(lib_fullpath)
-                extra_preargs = ['-install_name', install_name]
-            if sys.platform.startswith('linux'):
-                extra_preargs = ['-Wl,--no-as-needed']
-            self.compiler.link(
-                self.compiler.SHARED_LIBRARY,
-                objects, lib_fullpath,
-                #
-                libraries=lib.libraries,
-                library_dirs=lib.library_dirs,
-                runtime_library_dirs=lib.runtime_library_dirs,
-                export_symbols=export_symbols,
-                extra_preargs=extra_preargs,
-                extra_postargs=extra_link_args,
-                debug=self.debug,
-                target_lang=language,
-                )
-            if sys.platform == 'darwin':
-                self.compiler.linker_so = linker_so
-        return
-
-    def get_lib_fullpath (self, lib, build_dir):
-        package_dir = (lib.package or '').split('.')
-        dest_dir = convert_path(lib.dest_dir or '')
-        output_dir = os.path.join(build_dir, *package_dir+[dest_dir])
-        lib_type =  lib.kind
-        if sys.platform != 'darwin':
-            if lib_type == 'dylib':
-                lib_type = 'shared'
-        lib_fullpath = self.compiler.library_filename(
-            lib.name, lib_type=lib_type, output_dir=output_dir)
-        return lib_fullpath
-
-    def get_source_files (self):
-        filenames = cmd_build_clib.build_clib.get_source_files(self)
-        self.check_library_list(self.libraries)
-        self.check_library_list(self.libraries_a)
-        self.check_library_list(self.libraries_so)
-        for (lib_name, build_info) in self.libraries:
-            filenames.extend(build_info.get(sources, []))
-        for lib in self.libraries_so + self.libraries_a:
-            filenames.extend(lib.sources)
-        return filenames
-
-    def get_outputs (self):
-        outputs = []
-        for lib in self.libraries_a:
-            lib_fullpath = self.get_lib_fullpath(lib, self.build_clib_a)
-            outputs.append(lib_fullpath)
-        for lib in self.libraries_so:
-            lib_fullpath = self.get_lib_fullpath(lib, self.build_clib_so)
-            outputs.append(lib_fullpath)
-        return outputs
 
 
 # Command class to build extension modules
@@ -1185,77 +1081,46 @@ class build_ext(cmd_build_ext.build_ext):
         build_cmd = self.get_finalized_command('build')
         if isinstance(build_cmd,  build):
             cmd_set_undefined_mpi_options(self, 'build')
-        #
-        if ((sys.platform.startswith('linux') or
-             sys.platform.startswith('gnu') or
-             sys.platform.startswith('sunos')) and
-            sysconfig.get_config_var('Py_ENABLE_SHARED')):
-            # Remove <prefix>/lib[64]/pythonX.Y/config
-            libdir = os.path.dirname(sysconfig.get_makefile_filename())
-            if libdir in self.library_dirs:
-                self.library_dirs.remove(bad_libdir)
-            # Add <prefix>/lib[64]
-            libdir = sysconfig.get_config_var("LIBDIR")
-            if libdir not in self.library_dirs:
-                self.library_dirs.append(libdir)
-            if libdir not in self.rpath:
-                self.rpath.append(libdir)
-            # Special-case
-            if sys.exec_prefix == '/usr':
-                self.library_dirs.remove(libdir)
-                self.rpath.remove(libdir)
 
-    def run (self):
-        if self.distribution.has_c_libraries():
-            build_clib = self.get_finalized_command('build_clib')
-            if build_clib.libraries:
-                build_clib.run()
+    def run(self):
+        self.build_sources()
         cmd_build_ext.build_ext.run(self)
 
+    def build_sources(self):
+        if self.get_command_name() == 'build_ext':
+            if 'build_src' in self.distribution.cmdclass:
+                self.run_command('build_src')
+
     def build_extensions(self):
-        from copy import deepcopy
         # First, sanity-check the 'extensions' list
         self.check_extensions_list(self.extensions)
-        # customize compiler
-        self.compiler_sys = deepcopy(self.compiler)
-        customize_compiler(self.compiler_sys)
         # parse configuration file and configure compiler
-        self.compiler_mpi = self.compiler
         self.config = configuration(self, verbose=True)
         configure_compiler(self.compiler, self.config)
-        # extra configuration, check for all MPI symbols
-        if self.configure:
-            log.info('testing for missing MPI symbols')
-            config_cmd = self.get_finalized_command('config')
-            config_cmd.compiler = self.compiler # fix compiler
-            configure = ConfigureMPI(config_cmd)
-            results = configure.run()
-            configure.dump(results)
-            #
-            macro = 'HAVE_CONFIG_H'
-            log.info("defining preprocessor macro '%s'" % macro)
-            self.compiler.define_macro(macro, 1)
         # build extensions
         for ext in self.extensions:
             try:
                 self.build_extension(ext)
             except (DistutilsError, CCompilerError):
-                if not ext.optional: raise
+                if not ext.optional:
+                    raise
                 e = sys.exc_info()[1]
-                self.warn('%s' % e)
+                self.warn(f'{e}')
                 exe = isinstance(ext, Executable)
                 knd = 'executable' if exe else 'extension'
-                self.warn('building optional %s "%s" failed' % (knd, ext.name))
+                self.warn(f'building optional {knd} "{ext.name}" failed')
 
     def config_extension (self, ext):
         configure = getattr(ext, 'configure', None)
         if configure:
             config_cmd = self.get_finalized_command('config')
             config_cmd.compiler = self.compiler # fix compiler
+            config_cmd.configure = self.configure
             configure(ext, config_cmd)
+        if with_coverage():
+            ext.define_macros += [('CYTHON_TRACE_NOGIL', 1)]
 
     def build_extension (self, ext):
-        from distutils.dep_util import newer_group
         fullname = self.get_ext_fullname(ext.name)
         filename = os.path.join(
             self.build_lib, self.get_ext_filename(fullname))
@@ -1264,22 +1129,8 @@ class build_ext(cmd_build_ext.build_ext):
             log.debug("skipping '%s' extension (up-to-date)", ext.name)
             return
         #
-        # XXX -- this is a Vile HACK!
-        self.compiler = self.compiler_mpi
-        if ext.name == 'mpi4py.dl':
-            self.compiler = self.compiler_sys
-        #
         self.config_extension(ext)
         cmd_build_ext.build_ext.build_extension(self, ext)
-        #
-        # XXX -- this is a Vile HACK!
-        if ext.name == 'mpi4py.MPI':
-            dest_dir = os.path.dirname(filename)
-            self.mkpath(dest_dir)
-            mpi_cfg = os.path.join(dest_dir, 'mpi.cfg')
-            log.info("writing %s" % mpi_cfg)
-            if not self.dry_run:
-                self.config.dump(filename=mpi_cfg)
         #
         if ext.name == 'mpi4py.MPI' and sys.platform == 'win32':
             confdir = os.path.dirname(__file__)
@@ -1296,32 +1147,9 @@ class build_ext(cmd_build_ext.build_ext):
                     dry_run=self.dry_run,
                 )
 
-    def copy_extensions_to_source(self):
-        build_py = self.get_finalized_command('build_py')
-        cmd_build_ext.build_ext.copy_extensions_to_source(self)
-        for ext in self.extensions:
-            if ext.name == 'mpi4py.MPI':
-                fullname = self.get_ext_fullname(ext.name)
-                filename = self.get_ext_filename(fullname)
-                dirname = os.path.dirname(filename)
-                dest_dir = os.path.join(self.build_lib, dirname)
-                regular_file = os.path.join(dest_dir, 'mpi.cfg')
-                package = fullname.rpartition('.')[0]
-                package_dir = build_py.get_package_dir(package)
-                inplace_file = os.path.join(package_dir, 'mpi.cfg')
-                self.copy_file(regular_file, inplace_file, level=self.verbose)
-
     def get_outputs(self):
         outputs = cmd_build_ext.build_ext.get_outputs(self)
         for ext in self.extensions:
-            # XXX -- this is a Vile HACK!
-            if ext.name == 'mpi4py.MPI':
-                fullname = self.get_ext_fullname(ext.name)
-                filename = self.get_ext_filename(fullname)
-                dirname = os.path.dirname(filename)
-                dest_dir = os.path.join(self.build_lib, dirname)
-                output_file = os.path.join(dest_dir, 'mpi.cfg')
-                outputs.append(output_file)
             if ext.name == 'mpi4py.MPI' and sys.platform == 'win32':
                 pthfile = 'mpi.pth'
                 output_file = os.path.join(self.build_lib, pthfile)
@@ -1338,7 +1166,8 @@ class build_exe(build_ext):
     user_options = [
         ('build-exe=', None,
          "build directory for executable components"),
-        ] + build_ext.user_options
+        *build_ext.user_options,
+    ]
 
 
     def initialize_options (self):
@@ -1380,15 +1209,16 @@ class build_exe(build_ext):
             if (exe.sources is None or
                 type(exe.sources) not in (ListType, TupleType)):
                 raise DistutilsSetupError(
-                    ("in 'executables' option (executable '%s'), " +
-                     "'sources' must be present and must be " +
-                     "a list of source filenames") % exe.name)
+                    f"in 'executables' option (executable '{exe.name}'), "
+                    "'sources' must be present and must be "
+                    "a list of source filenames"
+                )
 
     def get_exe_fullpath(self, exe, build_dir=None):
         build_dir = build_dir or self.build_exe
         package_dir = (exe.package or '').split('.')
         dest_dir = convert_path(exe.dest_dir or '')
-        output_dir = os.path.join(build_dir, *package_dir+[dest_dir])
+        output_dir = os.path.join(build_dir, *[*package_dir, dest_dir])
         exe_filename = self.get_exe_filename(exe.name)
         return os.path.join(output_dir, exe_filename)
 
@@ -1396,7 +1226,6 @@ class build_exe(build_ext):
         build_ext.config_extension(self, exe)
 
     def build_executable (self, exe):
-        from distutils.dep_util import newer_group
         sources = list(exe.sources)
         depends = list(exe.depends)
         exe_fullpath = self.get_exe_fullpath(exe)
@@ -1447,20 +1276,21 @@ class build_exe(build_ext):
         # Get special linker flags for building a executable with
         # bundled Python library, also fix location of needed
         # python.exp file on AIX
-        ldshflag = sysconfig.get_config_var('LINKFORSHARED') or ''
-        ldshflag = ldshflag.replace('-Xlinker ', '-Wl,')
+        ldflags = sysconfig.get_config_var('PY_LDFLAGS') or ''
+        linkshared = sysconfig.get_config_var('LINKFORSHARED') or ''
+        linkshared = linkshared.replace('-Xlinker ', '-Wl,')
         if sys.platform == 'darwin': # fix wrong framework paths
             fwkprefix = sysconfig.get_config_var('PYTHONFRAMEWORKPREFIX')
             fwkdir = sysconfig.get_config_var('PYTHONFRAMEWORKDIR')
             if fwkprefix and fwkdir and fwkdir != 'no-framework':
-                for flag in split_quoted(ldshflag):
+                for flag in shlex.split(linkshared):
                     if flag.startswith(fwkdir):
                         fwkpath = os.path.join(fwkprefix, flag)
-                        ldshflag = ldshflag.replace(flag, fwkpath)
+                        linkshared = linkshared.replace(flag, fwkpath)
         if sys.platform.startswith('aix'):
             python_lib = sysconfig.get_python_lib(standard_lib=1)
             python_exp = os.path.join(python_lib, 'config', 'python.exp')
-            ldshflag = ldshflag.replace('Modules/python.exp', python_exp)
+            linkshared = linkshared.replace('Modules/python.exp', python_exp)
         # Detect target language, if not provided
         language = exe.language or self.compiler.detect_language(sources)
         self.compiler.link(
@@ -1470,7 +1300,7 @@ class build_exe(build_ext):
             libraries=self.get_libraries(exe),
             library_dirs=exe.library_dirs,
             runtime_library_dirs=exe.runtime_library_dirs,
-            extra_preargs=split_quoted(ldshflag),
+            extra_preargs=shlex.split(ldflags) + shlex.split(linkshared),
             extra_postargs=extra_args,
             debug=self.debug,
             target_lang=language)
@@ -1497,6 +1327,14 @@ class build_exe(build_ext):
 
 class install(cmd_install.install):
 
+    def initialize_options(self):
+        with warnings.catch_warnings():
+            if setuptools:
+                category = setuptools.SetuptoolsDeprecationWarning
+                warnings.simplefilter('ignore', category)
+            cmd_install.install.initialize_options(self)
+        self.old_and_unmanageable = True
+
     def run(self):
         cmd_install.install.run(self)
 
@@ -1507,9 +1345,10 @@ class install(cmd_install.install):
     def has_exe (self):
         return self.distribution.has_executables()
 
-    sub_commands = \
-        cmd_install.install.sub_commands[:] + \
-        [('install_exe', has_exe)]
+    sub_commands = [
+        *cmd_install.install.sub_commands,
+        ('install_exe', has_exe),
+    ]
 
     # XXX disable install_exe subcommand !!!
     del sub_commands[-1]
@@ -1519,15 +1358,19 @@ class install_lib(cmd_install_lib.install_lib):
 
     def get_outputs(self):
         outputs = cmd_install_lib.install_lib.get_outputs(self)
-        for (build_cmd, build_dir) in (('build_clib', 'build_lib'),
-                                       ('build_exe',  'build_exe')):
-            outs = self._mutate_outputs(1, build_cmd, build_dir,
-                                        self.install_dir)
-            build_cmd = self.get_finalized_command(build_cmd)
-            build_files = build_cmd.get_outputs()
-            for out in outs:
-                if os.path.exists(out):
-                    outputs.append(out)
+        for (build_cmd, build_dir) in (
+            ('build_exe',  'build_exe'),
+        ):
+            cmd_obj = self.get_finalized_command(build_cmd)
+            build_files = cmd_obj.get_outputs()
+            exe_outputs = self._mutate_outputs(
+                self.distribution.has_executables(),
+                build_cmd, build_dir,
+                self.install_dir,
+            )
+            for src, dest in zip(build_files, exe_outputs):
+                if os.path.exists(src):
+                    outputs.append(dest)
         return outputs
 
 
@@ -1588,7 +1431,7 @@ class install_exe(cmd_install_lib.install_lib):
                 if exe_filename.startswith("python-") and os.name == 'posix':
                     x, y = sys.version_info[:2]
                     install_name = exe_filename.replace(
-                        "python-", "python%s.%s-" % sys.version_info[:2])
+                        "python-", f"python{x}.{y}-")
                     link = None
                 else:
                     install_name = exe_filename
@@ -1608,31 +1451,6 @@ class install_exe(cmd_install_lib.install_lib):
             build_exe = self.get_finalized_command('build_exe')
             inputs.extend(build_exe.get_outputs())
         return inputs
-
-
-class test(Command):
-    description = "run the test suite"
-    user_options = [
-        ('args=', 'a', "options"),
-        ]
-
-    def initialize_options(self):
-        self.args = None
-    def finalize_options(self):
-        if self.args:
-            self.args = split_quoted(self.args)
-        else:
-            self.args = []
-    def run(self):
-        pass
-
-
-class sdist(cmd_sdist.sdist):
-
-    def run (self):
-        build_src = self.get_finalized_command('build_src')
-        build_src.run()
-        cmd_sdist.sdist.run(self)
 
 
 class clean(cmd_clean.clean):
@@ -1703,7 +1521,7 @@ class clean(cmd_clean.clean):
 # -----------------------------------------------------------------------------
 
 if setuptools:
-    try:
+    with contextlib.suppress(Exception):
         from setuptools.command import egg_info as mod_egg_info
         _FileList = mod_egg_info.FileList
         class FileList(_FileList):
@@ -1714,24 +1532,65 @@ if setuptools:
                 finally:
                     log.set_threshold(level)
         mod_egg_info.FileList = FileList
-    except:
-        pass
 
 # -----------------------------------------------------------------------------
 
-try:
-    import msilib
-    if not hasattr(msilib, 'Win64'):
-        if hasattr(msilib, 'AMD64'):
-            msilib.Win64 = msilib.AMD64
-    Directory_make_short = msilib.Directory.make_short
-    def make_short(self, file):
-        parts = file.split('.')
-        if len(parts) > 1:
-            file = '_'.join(parts[:-1])+'.'+parts[-1]
-        return Directory_make_short(self, file)
-    msilib.Directory.make_short = make_short
-except:
-    pass
+# Support for Reproducible Builds
+# https://reproducible-builds.org/docs/source-date-epoch/
+
+timestamp = os.environ.get('SOURCE_DATE_EPOCH')
+if timestamp is not None:
+    import distutils.archive_util as archive_util
+    import stat
+    import tarfile
+    import time
+
+    timestamp = float(max(int(timestamp), 0))
+
+    class Time:
+        @staticmethod
+        def time():
+            return timestamp
+        @staticmethod
+        def localtime(_=None):
+            return time.localtime(timestamp)
+
+    class TarInfoMode:
+        def __get__(self, obj, objtype=None):
+            return obj._mode
+        def __set__(self, obj, stmd):
+            ifmt = stat.S_IFMT(stmd)
+            mode = stat.S_IMODE(stmd) & 0o7755
+            obj._mode = ifmt | mode
+
+    class TarInfoAttr:
+        def __init__(self, value):
+            self.value = value
+        def __get__(self, obj, objtype=None):
+            return self.value
+        def __set__(self, obj, value):
+            pass
+
+    class TarInfo(tarfile.TarInfo):
+        mode = TarInfoMode()
+        mtime = TarInfoAttr(timestamp)
+        uid = TarInfoAttr(0)
+        gid = TarInfoAttr(0)
+        uname = TarInfoAttr('')
+        gname = TarInfoAttr('')
+
+    def make_tarball(*args, **kwargs):
+        tarinfo_orig = tarfile.TarFile.tarinfo
+        try:
+            tarfile.time = Time()
+            tarfile.TarFile.tarinfo = TarInfo
+            return archive_util.make_tarball(*args, **kwargs)
+        finally:
+            tarfile.time = time
+            tarfile.TarFile.tarinfo = tarinfo_orig
+
+    archive_util.ARCHIVE_FORMATS['gztar'] = (
+        make_tarball, *archive_util.ARCHIVE_FORMATS['gztar'][1:],
+    )
 
 # -----------------------------------------------------------------------------

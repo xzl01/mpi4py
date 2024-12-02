@@ -1,47 +1,20 @@
 from mpi4py import MPI
 import mpiunittest as unittest
-from arrayimpl import allclose
-from arrayimpl import typestr
 import sys
 
-typemap = MPI._typedict
+from arrayimpl import (
+    array,
+    numpy,
+    cupy,
+    numba,
+)
 
-try:
-    import array
-except ImportError:
-    array = None
-try:
-    import numpy
-except ImportError:
-    numpy = None
-try:
-    import cupy
-except ImportError:
-    cupy = None
-try:
-    import numba
-    import numba.cuda
-    from distutils.version import StrictVersion
-    numba_version = StrictVersion(numba.__version__).version
-    if numba_version < (0, 48):
-        import warnings
-        warnings.warn('To test Numba GPU arrays, use Numba v0.48.0+.',
-                      RuntimeWarning)
-        numba = None
-except ImportError:
-    numba = None
-
-
-py2 = sys.version_info[0] == 2
-py3 = sys.version_info[0] >= 3
-pypy = hasattr(sys, 'pypy_version_info')
-pypy2 = pypy and py2
-pypy_lt_53 = pypy and sys.pypy_version_info < (5, 3)
-
+from arrayimpl import typestr
+typemap = MPI.Datatype.fromcode
 
 # ---
 
-class BaseBuf(object):
+class BaseBuf:
 
     def __init__(self, typecode, initializer):
         self._buf = array.array(typecode, initializer)
@@ -68,28 +41,49 @@ try:
 except ImportError:
     dlpack = None
 
+
 class DLPackCPUBuf(BaseBuf):
 
+    versioned = True
+
     def __init__(self, typecode, initializer):
-        super(DLPackCPUBuf, self).__init__(typecode, initializer)
-        self.managed = dlpack.make_dl_managed_tensor(self._buf)
+        super().__init__(typecode, initializer)
+        self.managed = dlpack.make_dl_managed_tensor(self._buf, self.versioned)
 
     def __del__(self):
         self.managed = None
-        if not pypy and sys.getrefcount(self._buf) > 2:
-            raise RuntimeError('dlpack: possible reference leak')
+        if sys and not hasattr(sys, 'pypy_version_info'):
+            if sys.getrefcount(self._buf) > 2:
+                raise RuntimeError('dlpack: possible reference leak')
 
     def __dlpack_device__(self):
         device = self.managed.dl_tensor.device
         return (device.device_type, device.device_id)
 
-    def __dlpack__(self, stream=None):
+    def __dlpack__(
+        self,
+        stream=None,
+        max_version=None,
+        dl_device=None,
+        copy=None,
+    ):
+        kDLCPU = dlpack.DLDeviceType.kDLCPU
         managed = self.managed
-        if managed.dl_tensor.device.device_type == \
-           dlpack.DLDeviceType.kDLCPU:
-            assert stream == None
-        capsule = dlpack.make_py_capsule(managed)
+        device = managed.dl_tensor.device
+        if device.device_type == kDLCPU:
+            assert stream is None
+        else:
+            assert stream == -1
+        capsule = dlpack.make_py_capsule(managed, self.versioned)
         return capsule
+
+
+class DLPackCPUBufV0(DLPackCPUBuf):
+
+    versioned = False
+
+    def __dlpack__(self, stream=None):
+        return super().__dlpack__(stream=stream)
 
 
 if cupy is not None:
@@ -109,14 +103,34 @@ if cupy is not None:
                 self.dev_type = dlpack.DLDeviceType.kDLCUDA
 
         def __del__(self):
-            if not pypy and sys.getrefcount(self._buf) > 2:
-                raise RuntimeError('dlpack: possible reference leak')
+            if sys and not hasattr(sys, 'pypy_version_info'):
+                if sys.getrefcount(self._buf) > 2:
+                    raise RuntimeError('dlpack: possible reference leak')
 
         def __dlpack_device__(self):
             if self.has_dlpack:
                 return self._buf.__dlpack_device__()
             else:
                 return (self.dev_type, self._buf.device.id)
+
+        if False:  # TODO: wait until CuPy supports DLPack v1.0
+
+            def __dlpack__(self, stream=None, **kwargs):
+                assert self.has_dlpack
+                cupy.cuda.get_current_stream().synchronize()
+                return self._buf.__dlpack__(stream=-1, **kwargs)
+
+        else:
+
+            def __dlpack__(self, stream=None):
+                cupy.cuda.get_current_stream().synchronize()
+                if self.has_dlpack:
+                    return self._buf.__dlpack__(stream=-1)
+                else:
+                    return self._buf.toDlpack()
+
+
+    class DLPackGPUBufV0(DLPackGPUBuf):
 
         def __dlpack__(self, stream=None):
             cupy.cuda.get_current_stream().synchronize()
@@ -125,13 +139,28 @@ if cupy is not None:
             else:
                 return self._buf.toDlpack()
 
+else:
+
+    class DLPackGPUBufInitMixin:
+
+        def __init__(self, *args):
+            super().__init__(*args)
+            kDLCUDA = dlpack.DLDeviceType.kDLCUDA
+            device = self.managed.dl_tensor.device
+            device.device_type = kDLCUDA
+
+    class DLPackGPUBuf(DLPackGPUBufInitMixin, DLPackCPUBuf):
+        pass
+
+    class DLPackGPUBufV0(DLPackGPUBufInitMixin, DLPackCPUBufV0):
+        pass
 
 # ---
 
 class CAIBuf(BaseBuf):
 
     def __init__(self, typecode, initializer, readonly=False):
-        super(CAIBuf, self).__init__(typecode, initializer)
+        super().__init__(typecode, initializer)
         address = self._buf.buffer_info()[0]
         typecode = self._buf.typecode
         itemsize = self._buf.itemsize
@@ -201,6 +230,8 @@ class TestMessageSimple(unittest.TestCase):
         self.assertRaises(TypeError, f)
         def f(): Sendrecv(b"abc", b"abc")
         self.assertRaises((BufferError, TypeError, ValueError), f)
+        def f(): Sendrecv(object, empty)
+        self.assertRaises(TypeError, f)
 
     def testMessageNone(self):
         empty = [None, 0, "B"]
@@ -214,40 +245,18 @@ class TestMessageSimple(unittest.TestCase):
         empty = [MPI.BOTTOM, "B"]
         Sendrecv(empty, empty)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytes(self):
         sbuf = b"abc"
         rbuf = bytearray(3)
         Sendrecv([sbuf, "c"], [rbuf, MPI.CHAR])
         self.assertEqual(sbuf, rbuf)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytearray(self):
         sbuf = bytearray(b"abc")
         rbuf = bytearray(3)
         Sendrecv([sbuf, "c"], [rbuf, MPI.CHAR])
         self.assertEqual(sbuf, rbuf)
 
-    @unittest.skipIf(py3, 'python3')
-    @unittest.skipIf(pypy2, 'pypy2')
-    @unittest.skipIf(hasattr(MPI, 'ffi'), 'mpi4py-cffi')
-    def testMessageUnicode(self):  # Test for Issue #120
-        sbuf = unicode("abc")
-        rbuf = bytearray(len(buffer(sbuf)))
-        Sendrecv([sbuf, MPI.BYTE], [rbuf, MPI.BYTE])
-
-    @unittest.skipIf(py3, 'python3')
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
-    def testMessageBuffer(self):
-        sbuf = buffer(b"abc")
-        rbuf = bytearray(3)
-        Sendrecv([sbuf, "c"], [rbuf, MPI.CHAR])
-        self.assertEqual(sbuf, rbuf)
-        self.assertRaises((BufferError, TypeError, ValueError),
-                          Sendrecv, [rbuf, "c"], [sbuf, "c"])
-
-    @unittest.skipIf(pypy2, 'pypy2')
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageMemoryView(self):
         sbuf = memoryview(b"abc")
         rbuf = bytearray(3)
@@ -270,7 +279,7 @@ class TestMessageBlock(unittest.TestCase):
         MPI.Free_mem(buf)
 
 
-class BaseTestMessageSimpleArray(object):
+class BaseTestMessageSimpleArray:
 
     TYPECODES = "bhil"+"BHIL"+"fd"
 
@@ -284,7 +293,7 @@ class BaseTestMessageSimpleArray(object):
             self.assertEqual(a, b)
 
     def check2(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             r[:] = z
             Sendrecv([s, type],
@@ -331,7 +340,7 @@ class BaseTestMessageSimpleArray(object):
                     self.assertEqual(r[i], z[0])
 
     def check4(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             for count in (None, len(s)):
                 r[:] = z
@@ -341,7 +350,7 @@ class BaseTestMessageSimpleArray(object):
                     self.assertEqual(a, b)
 
     def check5(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             for p in range(0, len(s)):
                 r[:] = z
@@ -362,7 +371,7 @@ class BaseTestMessageSimpleArray(object):
                         self.assertEqual(a, b)
 
     def check6(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             for p in range(0, len(s)):
                 r[:] = z
@@ -408,6 +417,27 @@ class BaseTestMessageSimpleArray(object):
     def testArray6(self):
         self.check(self.check6)
 
+    def testBuffer(self):
+        kDLCPU, kDLCUDA = 1, 2
+        obj = self.array('i', [0,1,2,3])
+        buf = MPI.buffer.frombuffer(obj)
+        device_type = kDLCPU
+        if hasattr(obj, '__dlpack_device__'):
+            device_type, _ = obj.__dlpack_device__()
+        elif hasattr(obj, '__cuda_array_interface__'):
+            device_type = kDLCUDA
+        if device_type == kDLCPU:
+            buf.cast('i')
+            buf.tobytes('i')
+            buf[0] = buf[0]
+        if device_type == kDLCUDA:
+            with self.assertRaises(BufferError):
+                buf.cast('i')
+            with self.assertRaises(BufferError):
+                buf.tobytes('i')
+            with self.assertRaises(BufferError):
+                buf[0] = buf[0]
+
 
 @unittest.skipIf(array is None, 'array')
 class TestMessageSimpleArray(unittest.TestCase,
@@ -423,6 +453,22 @@ class TestMessageSimpleNumPy(unittest.TestCase,
 
     def array(self, typecode, initializer):
         return numpy.array(initializer, dtype=typecode)
+
+    def testByteOrder(self):
+        sbuf = numpy.zeros([3], 'i')
+        rbuf = numpy.zeros([3], 'i')
+        sbuf = sbuf.view(sbuf.dtype.newbyteorder('='))
+        rbuf = rbuf.view(rbuf.dtype.newbyteorder('='))
+        Sendrecv(sbuf, rbuf)
+        byteorder = '<' if sys.byteorder == 'little' else '>'
+        sbuf = sbuf.view(sbuf.dtype.newbyteorder(byteorder))
+        rbuf = rbuf.view(rbuf.dtype.newbyteorder(byteorder))
+        Sendrecv(sbuf, rbuf)
+        byteorder = '>' if sys.byteorder == 'little' else '<'
+        sbuf = sbuf.view(sbuf.dtype.newbyteorder(byteorder))
+        rbuf = rbuf.view(rbuf.dtype.newbyteorder(byteorder))
+        self.assertRaises(BufferError, Sendrecv, sbuf, rbuf)
+        Sendrecv([sbuf, MPI.INT], [rbuf, MPI.INT])
 
     def testOrderC(self):
         sbuf = numpy.ones([3,2])
@@ -469,14 +515,22 @@ class TestMessageSimpleDLPackCPUBuf(unittest.TestCase,
     def array(self, typecode, initializer):
         return DLPackCPUBuf(typecode, initializer)
 
+class TestMessageSimpleDLPackCPUBufV0(TestMessageSimpleDLPackCPUBuf):
 
-@unittest.skipIf(cupy is None, 'cupy')
+    def array(self, typecode, initializer):
+        return DLPackCPUBufV0(typecode, initializer)
+
+@unittest.skipIf(cupy is None and (array is None or dlpack is None), 'cupy')
 class TestMessageSimpleDLPackGPUBuf(unittest.TestCase,
                                     BaseTestMessageSimpleArray):
 
     def array(self, typecode, initializer):
         return DLPackGPUBuf(typecode, initializer)
 
+class TestMessageSimpleDLPackGPUBufV0(TestMessageSimpleDLPackGPUBuf):
+
+    def array(self, typecode, initializer):
+        return DLPackGPUBufV0(typecode, initializer)
 
 @unittest.skipIf(array is None, 'array')
 class TestMessageSimpleCAIBuf(unittest.TestCase,
@@ -535,7 +589,7 @@ class TestMessageSimpleNumba(unittest.TestCase,
         # numba arrays do not have the .all() method
         for i in range(3):
             for j in range(2):
-                self.assertTrue(sbuf[i,j] == rbuf[i,j])
+                self.assertEqual(sbuf[i,j], rbuf[i,j])
 
     def testOrderFortran(self):
         sbuf = numba.cuda.device_array((6,))
@@ -548,7 +602,7 @@ class TestMessageSimpleNumba(unittest.TestCase,
         # numba arrays do not have the .all() method
         for i in range(3):
             for j in range(2):
-                self.assertTrue(sbuf[i,j] == rbuf[i,j])
+                self.assertEqual(sbuf[i,j], rbuf[i,j])
 
     def testNotContiguous(self):
         sbuf = numba.cuda.device_array((6,))
@@ -565,6 +619,19 @@ class TestMessageSimpleNumba(unittest.TestCase,
 @unittest.skipIf(array is None, 'array')
 @unittest.skipIf(dlpack is None, 'dlpack')
 class TestMessageDLPackCPUBuf(unittest.TestCase):
+
+    def testVersion(self):
+        buf = DLPackCPUBuf('i', [0,1,2,3])
+        buf.managed.version.major = 0
+        self.assertRaises(BufferError, MPI.Get_address, buf)
+
+    def testReadonly(self):
+        smsg = DLPackCPUBuf('i', [0,1,2,3])
+        rmsg = DLPackCPUBuf('i', [0,0,0,0])
+        smsg.managed.flags |= dlpack.DLPACK_FLAG_BITMASK_READ_ONLY
+        rmsg.managed.flags |= dlpack.DLPACK_FLAG_BITMASK_READ_ONLY
+        MPI.Get_address(smsg)
+        self.assertRaises(BufferError, Sendrecv, smsg, rmsg)
 
     def testDevice(self):
         buf = DLPackCPUBuf('i', [0,1,2,3])
@@ -599,7 +666,7 @@ class TestMessageDLPackCPUBuf(unittest.TestCase):
         del buf.__dlpack__
         del capsule
         #
-        buf.__dlpack__ = lambda *args, **kwargs:  None
+        buf.__dlpack__ = lambda *args, **kwargs: None
         self.assertRaises(BufferError, MPI.Get_address, buf)
         del buf.__dlpack__
 
@@ -626,6 +693,7 @@ class TestMessageDLPackCPUBuf(unittest.TestCase):
         #
         dltensor.ndim = 0
         dltensor.shape = None
+        dltensor.strides = None
         MPI.Get_address(buf)
         #
         dltensor.ndim = 1
@@ -647,6 +715,27 @@ class TestMessageDLPackCPUBuf(unittest.TestCase):
         #
         del dltensor
 
+    def testDtypeCode(self):
+        sbuf = DLPackCPUBuf('H', range(4))
+        rbuf = DLPackCPUBuf('H', [0]*4)
+        dtype = sbuf.managed.dl_tensor.dtype
+        dtype.code = dlpack.DLDataTypeCode.kDLOpaqueHandle
+        dtype = None
+        Sendrecv(sbuf, rbuf)
+        for i in range(4):
+            self.assertEqual(rbuf[i], i)
+
+    def testDtypeLanes(self):
+        sbuf = DLPackCPUBuf('I', range(4))
+        rbuf = DLPackCPUBuf('I', [0]*4)
+        dtype = sbuf.managed.dl_tensor.dtype
+        dtype.bits //= 2
+        dtype.lanes *= 2
+        dtype = None
+        Sendrecv(sbuf, rbuf)
+        for i in range(4):
+            self.assertEqual(rbuf[i], i)
+
     def testContiguous(self):
         buf = DLPackCPUBuf('i', range(8))
         dltensor = buf.managed.dl_tensor
@@ -655,13 +744,13 @@ class TestMessageDLPackCPUBuf(unittest.TestCase):
             dlpack.make_dl_shape([2, 2, 2], order='C')
         s = dltensor.strides
         strides = [s[i] for i in range(dltensor.ndim)]
-        s[0], s[1], s[2] = [strides[i] for i in [0, 1, 2]]
+        s[0], s[1], s[2] = (strides[i] for i in [0, 1, 2])
         MPI.Get_address(buf)
-        s[0], s[1], s[2] = [strides[i] for i in [2, 1, 0]]
+        s[0], s[1], s[2] = (strides[i] for i in [2, 1, 0])
         MPI.Get_address(buf)
-        s[0], s[1], s[2] = [strides[i] for i in [0, 2, 1]]
+        s[0], s[1], s[2] = (strides[i] for i in [0, 2, 1])
         self.assertRaises(BufferError, MPI.Get_address, buf)
-        s[0], s[1], s[2] = [strides[i] for i in [1, 0, 2]]
+        s[0], s[1], s[2] = (strides[i] for i in [1, 0, 2])
         self.assertRaises(BufferError, MPI.Get_address, buf)
         del s
         #
@@ -686,7 +775,7 @@ class TestMessageDLPackCPUBuf(unittest.TestCase):
         dltensor.ndim = 1
         for i in range(len(buf)):
             dltensor.byte_offset = i
-            mem = MPI.memory(buf)
+            mem = MPI.buffer(buf)
             self.assertEqual(mem[0], buf[i])
         #
         del dltensor
@@ -696,9 +785,10 @@ class TestMessageDLPackCPUBuf(unittest.TestCase):
 @unittest.skipIf(array is None, 'array')
 class TestMessageCAIBuf(unittest.TestCase):
 
-    def testNonReadonly(self):
+    def testReadonly(self):
         smsg = CAIBuf('i', [1,2,3], readonly=True)
         rmsg = CAIBuf('i', [0,0,0], readonly=True)
+        MPI.Get_address(smsg)
         self.assertRaises(BufferError, Sendrecv, smsg, rmsg)
 
     def testNonContiguous(self):
@@ -761,6 +851,14 @@ class TestMessageCAIBuf(unittest.TestCase):
         rmsg.__cuda_array_interface__['data'] = (dev_ptr, False, None)
         self.assertRaises(ValueError, Sendrecv, smsg, rmsg)
 
+    def testMask(self):
+        smsg = CAIBuf('B', [1,2,3])
+        rmsg = CAIBuf('B', [0,0,0])
+        rmsg.__cuda_array_interface__['mask'] = None
+        Sendrecv(smsg, rmsg)
+        rmsg.__cuda_array_interface__['mask'] = True
+        self.assertRaises(BufferError, Sendrecv, smsg, rmsg)
+
     def testTypestrMissing(self):
         smsg = CAIBuf('B', [1,2,3])
         rmsg = CAIBuf('B', [0,0,0])
@@ -778,6 +876,24 @@ class TestMessageCAIBuf(unittest.TestCase):
         rmsg = CAIBuf('B', [0,0,0])
         rmsg.__cuda_array_interface__['typestr'] = 42
         self.assertRaises(TypeError, Sendrecv, smsg, rmsg)
+
+    def testTypestrEndian(self):
+        smsg = CAIBuf('i', [1,2,3])
+        rmsg = CAIBuf('i', [0,0,0])
+        typestr = smsg.__cuda_array_interface__['typestr']
+        byteorder = '>' if sys.byteorder == 'little' else '<'
+        typestr = byteorder + typestr[1:]
+        smsg.__cuda_array_interface__['typestr'] = typestr
+        smsg.__cuda_array_interface__['descr'][0] = ('', typestr)
+        self.assertRaises(BufferError, Sendrecv, smsg, rmsg)
+        typestr = '#' + typestr[1:]
+        smsg.__cuda_array_interface__['typestr'] = typestr
+        smsg.__cuda_array_interface__['descr'][0] = ('', typestr)
+        self.assertRaises(BufferError, Sendrecv, smsg, rmsg)
+        typestr = '|' + typestr[1:]
+        smsg.__cuda_array_interface__['typestr'] = typestr
+        smsg.__cuda_array_interface__['descr'][0] = ('', typestr)
+        Sendrecv(smsg, rmsg)
 
     def testTypestrItemsize(self):
         smsg = CAIBuf('B', [1,2,3])
@@ -867,14 +983,7 @@ class TestMessageCAIBuf(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             self.assertRaises(RuntimeWarning, Sendrecv, smsg, rmsg)
-        try:  # Python 3.2+
-            self.assertWarns(RuntimeWarning, Sendrecv, smsg, rmsg)
-        except AttributeError:  # Python 2
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                Sendrecv(smsg, rmsg)
-                self.assertEqual(len(w), 1)
-                self.assertEqual(w[-1].category, RuntimeWarning)
+        self.assertWarns(RuntimeWarning, Sendrecv, smsg, rmsg)
         self.assertEqual(smsg, rmsg)
 
 
@@ -913,6 +1022,8 @@ class TestMessageVector(unittest.TestCase):
         buf = {1:2,3:4}
         def f(): Alltoallv([buf, 0,  0, "i"], empty)
         self.assertRaises(TypeError, f)
+        def f(): Alltoallv(object, empty)
+        self.assertRaises(TypeError, f)
 
     def testMessageNone(self):
         empty = [None, 0, "B"]
@@ -928,14 +1039,12 @@ class TestMessageVector(unittest.TestCase):
         empty = [MPI.BOTTOM, "B"]
         Alltoallv(empty, empty)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytes(self):
         sbuf = b"abc"
         rbuf = bytearray(3)
         Alltoallv([sbuf, "c"], [rbuf, MPI.CHAR])
         self.assertEqual(sbuf, rbuf)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytearray(self):
         sbuf = bytearray(b"abc")
         rbuf = bytearray(3)
@@ -944,7 +1053,7 @@ class TestMessageVector(unittest.TestCase):
 
 
 @unittest.skipMPI('msmpi(<8.0.0)')
-class BaseTestMessageVectorArray(object):
+class BaseTestMessageVectorArray:
 
     TYPECODES = "bhil"+"BHIL"+"fd"
 
@@ -958,7 +1067,7 @@ class BaseTestMessageVectorArray(object):
             self.assertEqual(a, b)
 
     def check2(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             r[:] = z
             Alltoallv([s, type],
@@ -997,7 +1106,7 @@ class BaseTestMessageVectorArray(object):
                     self.assertEqual(r[i], z[0])
 
     def check4(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             for count in (None, len(s)):
                 r[:] = z
@@ -1007,7 +1116,7 @@ class BaseTestMessageVectorArray(object):
                     self.assertEqual(a, b)
 
     def check5(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             for p in range(len(s)):
                 r[:] = z
@@ -1028,7 +1137,7 @@ class BaseTestMessageVectorArray(object):
                         self.assertEqual(a, b)
 
     def check6(self, z, s, r, typecode):
-        datatype = typemap[typecode]
+        datatype = typemap(typecode)
         for type in (None, typecode, datatype):
             for p in range(0, len(s)):
                 r[:] = z
@@ -1090,6 +1199,42 @@ class TestMessageVectorNumPy(unittest.TestCase,
     def array(self, typecode, initializer):
         return numpy.array(initializer, dtype=typecode)
 
+    def testCountNumPyArray(self):
+        sbuf = bytearray(b"abc")
+        rbuf = bytearray(4)
+        count = numpy.array([3])
+        displ = numpy.array([1])
+        Alltoallv([sbuf, count], [rbuf, (3, displ)])
+        self.assertEqual(sbuf, rbuf[displ[0]:])
+        with self.assertRaises(TypeError):
+            count = numpy.array([3.1])
+            displ = numpy.array([1.1])
+            Alltoallv([sbuf, count], [rbuf, (3, displ)])
+
+    def testCountNumPyScalar(self):
+        sbuf = bytearray(b"abc")
+        rbuf = bytearray(4)
+        count = numpy.array([3])[0]
+        displ = numpy.array([1])[0]
+        Alltoallv([sbuf, count], [rbuf, (3, [displ])])
+        self.assertEqual(sbuf, rbuf[displ:])
+        with self.assertRaises(TypeError):
+            count = numpy.array([3.1])[0]
+            displ = numpy.array([1.1])[0]
+            Alltoallv([sbuf, (3, [displ])], [rbuf, count])
+
+    def testCountNumPyZeroDim(self):
+        sbuf = bytearray(b"xabc")
+        rbuf = bytearray(3)
+        count = numpy.array(3)
+        displ = numpy.array(1)
+        Alltoallv([sbuf, (3, [displ])], [rbuf, count])
+        self.assertEqual(sbuf[displ:], rbuf)
+        with self.assertRaises(TypeError):
+            count = numpy.array(3.0)
+            displ = numpy.array(1.0)
+            Alltoallv([sbuf, (3, [displ])], [rbuf, count])
+
 
 @unittest.skipIf(array is None, 'array')
 class TestMessageVectorCAIBuf(unittest.TestCase,
@@ -1143,10 +1288,15 @@ class TestMessageVectorW(unittest.TestCase):
         def f(): Alltoallw([sbuf, [0], [0], [MPI.BYTE]],
                            [rbuf, [0], [0], [MPI.BYTE], None])
         self.assertRaises(ValueError, f)
+        def f(): Alltoallw([MPI.BOTTOM, None, [0], [MPI.BYTE]],
+                           [rbuf, [0], [0], [MPI.BYTE]])
+        self.assertRaises(ValueError, f)
+        def f(): Alltoallw([MPI.BOTTOM, [0], None, [MPI.BYTE]],
+                           [rbuf, [0], [0], [MPI.BYTE]])
+        self.assertRaises(ValueError, f)
         MPI.Free_mem(sbuf)
         MPI.Free_mem(rbuf)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBottom(self):
         sbuf = b"abcxyz"
         rbuf = bytearray(6)
@@ -1163,7 +1313,6 @@ class TestMessageVectorW(unittest.TestCase):
             stype.Free()
             rtype.Free()
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytes(self):
         sbuf = b"abc"
         rbuf = bytearray(3)
@@ -1172,7 +1321,6 @@ class TestMessageVectorW(unittest.TestCase):
         Alltoallw(smsg, rmsg)
         self.assertEqual(sbuf, rbuf)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytearray(self):
         sbuf = bytearray(b"abc")
         rbuf = bytearray(3)
@@ -1235,7 +1383,63 @@ class TestMessageVectorW(unittest.TestCase):
         Alltoallw(smsg, rmsg)
         # numba arrays do not have the .all() method
         for i in range(3):
-            self.assertTrue(sbuf[i] == rbuf[i])
+            self.assertEqual(sbuf[i], rbuf[i])
+
+
+# ---
+
+def Reduce(smsg, rmsg):
+    MPI.COMM_SELF.Reduce(smsg, rmsg, MPI.SUM, 0)
+
+
+def ReduceScatter(smsg, rmsg, rcounts):
+    MPI.COMM_SELF.Reduce_scatter(smsg, rmsg, rcounts, MPI.SUM)
+
+
+class TestMessageReduce(unittest.TestCase):
+
+    def testMessageBad(self):
+        sbuf = MPI.Alloc_mem(8)
+        rbuf = MPI.Alloc_mem(8)
+        with self.assertRaises(ValueError):
+            Reduce([sbuf, 1, MPI.INT], [rbuf, 1, MPI.FLOAT])
+        with self.assertRaises(ValueError):
+            Reduce([sbuf, 1, MPI.INT], [rbuf, 2, MPI.INT])
+        MPI.Free_mem(sbuf)
+        MPI.Free_mem(rbuf)
+
+
+class TestMessageReduceScatter(unittest.TestCase):
+
+    def testMessageBad(self):
+        sbuf = MPI.Alloc_mem(16)
+        rbuf = MPI.Alloc_mem(16)
+        with self.assertRaises(ValueError):
+            ReduceScatter(
+                [sbuf, 1, MPI.INT],
+                [rbuf, 1, MPI.FLOAT],
+                [1],
+            )
+        with self.assertRaises(ValueError):
+            ReduceScatter(
+                [sbuf, 2, MPI.INT],
+                [rbuf, 1, MPI.INT],
+                [1],
+            )
+        with self.assertRaises(ValueError):
+            ReduceScatter(
+                [sbuf, 2, MPI.INT],
+                [rbuf, 1, MPI.INT],
+                [2],
+            )
+        with self.assertRaises(ValueError):
+            ReduceScatter(
+                MPI.IN_PLACE,
+                [rbuf, 1, MPI.INT],
+                [2],
+            )
+        MPI.Free_mem(sbuf)
+        MPI.Free_mem(rbuf)
 
 
 # ---
@@ -1300,7 +1504,6 @@ class TestMessageRMA(unittest.TestCase):
             for target in (None, 0, [0, 0, MPI.BYTE]):
                 PutGet(empty, empty, target)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytes(self):
         for target in (None, 0, [0, 3, MPI.BYTE]):
             sbuf = b"abc"
@@ -1308,21 +1511,12 @@ class TestMessageRMA(unittest.TestCase):
             PutGet(sbuf, rbuf, target)
             self.assertEqual(sbuf, rbuf)
 
-    @unittest.skipIf(pypy_lt_53, 'pypy(<5.3)')
     def testMessageBytearray(self):
         for target in (None, 0, [0, 3, MPI.BYTE]):
             sbuf = bytearray(b"abc")
             rbuf = bytearray(3)
             PutGet(sbuf, rbuf, target)
             self.assertEqual(sbuf, rbuf)
-
-    @unittest.skipIf(py3, 'python3')
-    @unittest.skipIf(pypy2, 'pypy2')
-    @unittest.skipIf(hasattr(MPI, 'ffi'), 'mpi4py-cffi')
-    def testMessageUnicode(self):  # Test for Issue #120
-        sbuf = unicode("abc")
-        rbuf = bytearray(len(buffer(sbuf)))
-        PutGet([sbuf, MPI.BYTE], [rbuf, MPI.BYTE], None)
 
     @unittest.skipMPI('msmpi')
     @unittest.skipIf(array is None, 'array')
@@ -1349,7 +1543,6 @@ class TestMessageRMA(unittest.TestCase):
         self.assertEqual(sbuf, rbuf)
 
     @unittest.skipMPI('msmpi')
-    @unittest.skipMPI('mvapich2')
     @unittest.skipIf(cupy is None, 'cupy')
     def testMessageCuPy(self):
         sbuf = cupy.array([1,2,3], 'i')
@@ -1358,7 +1551,6 @@ class TestMessageRMA(unittest.TestCase):
         self.assertTrue((sbuf == rbuf).all())
 
     @unittest.skipMPI('msmpi')
-    @unittest.skipMPI('mvapich2')
     @unittest.skipIf(numba is None, 'numba')
     def testMessageNumba(self):
         sbuf = numba.cuda.device_array((3,), 'i')
@@ -1368,7 +1560,7 @@ class TestMessageRMA(unittest.TestCase):
         PutGet(sbuf, rbuf)
         # numba arrays do not have the .all() method
         for i in range(3):
-            self.assertTrue(sbuf[i] == rbuf[i])
+            self.assertEqual(sbuf[i], rbuf[i])
 
 
 # ---

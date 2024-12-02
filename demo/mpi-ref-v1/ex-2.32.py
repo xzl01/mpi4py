@@ -1,4 +1,4 @@
-# Jacobi computation, using persitent requests
+# Jacobi computation, using persistent requests
 
 from mpi4py import MPI
 try:
@@ -14,7 +14,7 @@ p = MPI.COMM_WORLD.Get_size()
 myrank = MPI.COMM_WORLD.Get_rank()
 
 # compute size of local block
-m = n/p
+m = n//p
 if myrank < (n - p * m):
     m = m + 1
 
@@ -29,14 +29,14 @@ else:
     right = myrank + 1
 
 # allocate local arrays
-A = numpy.empty((n+2, m+2), dtype=float, order='fortran')
-B = numpy.empty((n, m), dtype=float, order='fortran')
+A = numpy.empty((n+2, m+2), dtype=float, order='f')
+B = numpy.empty((n, m), dtype=float, order='f')
 
 A.fill(1)
 A[0, :] = A[-1, :] = 0
 A[:, 0] = A[:, -1] = 0
 
-# create persintent requests
+# create persistent requests
 tag = 0
 sreq1 = MPI.COMM_WORLD.Send_init((B[:,  0], MPI.DOUBLE), left,  tag)
 sreq2 = MPI.COMM_WORLD.Send_init((B[:, -1], MPI.DOUBLE), right, tag)
@@ -89,6 +89,6 @@ while not converged:
                              op=MPI.LAND)
     converged = bool(glb_conv)
 
-# free persintent requests
+# free persistent requests
 for req in reqlist:
     req.Free()

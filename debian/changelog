@@ -1,3 +1,247 @@
+mpi4py (4.0.1-6) unstable; urgency=medium
+
+  * mips64el is in trouble. Reinstate version restriction. Test
+    default python only and skip all TestRMA.
+  * skip testAccumulate from test_rma_nb on bigendian architectures
+    (s390x ppc64 sparc64, not alpha). Skip separately from DMA skips.
+
+ -- Drew Parsons <dparsons@debian.org>  Tue, 19 Nov 2024 21:55:01 +0100
+
+mpi4py (4.0.1-5) unstable; urgency=medium
+
+  * update test skips
+    - add alpha, sparc64 to the DMA skip list
+    - DMA skip arches also skip testGetAccumulate
+    - mips64el skips all TestRMA
+  * revert mips64el version restriction, run tests on all supported
+    python versions. The problem was TestRMA.
+
+ -- Drew Parsons <dparsons@debian.org>  Tue, 19 Nov 2024 11:53:52 +0100
+
+mpi4py (4.0.1-4) unstable; urgency=medium
+
+  * s390x ppc64: skip all TestDPM tests (test_dynproc.py)
+    see https://github.com/mpi4py/mpi4py/issues/586
+    Closes: #1087609. Future ref. #1087800.
+  * apply test skips to serial build tests
+  * debian/rules: explicitly set DEB_HOST_ARCH
+  * mips64el times out. Run build tests on default python only
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 18 Nov 2024 23:37:00 +0100
+
+mpi4py (4.0.1-3) unstable; urgency=medium
+
+  * s390x ppc64: skip testConnectAccept too
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 18 Nov 2024 02:09:27 +0100
+
+mpi4py (4.0.1-2) unstable; urgency=medium
+
+  * skip testAcceptConnect (test_dynproc.TestDPM) on s390x ppc64
+    which segfaults with PMIX_ERR_BAD_PARAM. Closes: #1087609.
+  * reinstate skipping testPackUnpackExternal on sparc64.
+    OpenMPI 4.1.2 broke memory alignment on sparc64,
+    see https://github.com/mpi4py/mpi4py/issues/147
+    Closes: #1059791
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 18 Nov 2024 00:23:20 +0100
+
+mpi4py (4.0.1-1) unstable; urgency=medium
+
+  * New upstream release
+    - applies debian patch fix_symbols_PR549.patch
+
+ -- Drew Parsons <dparsons@debian.org>  Sun, 17 Nov 2024 15:47:58 +0100
+
+mpi4py (4.0.0-9) unstable; urgency=medium
+
+  * Team upload.
+  * Use the new OpenMPI 5 environment variable to allow oversubscription.
+    This should allow the package to be built on systems with a single CPU.
+
+ -- Santiago Vila <sanvila@debian.org>  Fri, 08 Nov 2024 21:55:00 +0100
+
+mpi4py (4.0.0-8) unstable; urgency=medium
+
+  * python3-mpi4py Breaks: python3-pyzoltan (<< 1.0.1-10~)
+    mpi4py 4 requires pyzoltan to patch the definition of MPI_Session
+
+ -- Drew Parsons <dparsons@debian.org>  Sun, 29 Sep 2024 09:51:16 +0200
+
+mpi4py (4.0.0-7) unstable; urgency=medium
+
+  * update debian/copyright: mpi4py 4 was released under BSD-3-clause
+  * avoid oversubscribing tests (i386 takes 1 hour running 3 processes
+    where only 2 are available). Use no more than the available number
+    of processors, except do use at least 2 processes.
+
+ -- Drew Parsons <dparsons@debian.org>  Sun, 22 Sep 2024 00:24:43 +0200
+
+mpi4py (4.0.0-6) unstable; urgency=medium
+
+  * debian/tests: fix test for DEB_HOST_ARCH (i386 uses 3 processes)
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 16 Sep 2024 10:21:08 +0200
+
+mpi4py (4.0.0-5) unstable; urgency=medium
+
+  * update debian/tests
+    - run tests from mpi4py-test script
+    - report number of available processing units (nproc)
+    - run i386 tests with 3 processors not 5.
+      mpich is particularly slow on i386 (times out).
+
+ -- Drew Parsons <dparsons@debian.org>  Sun, 15 Sep 2024 09:36:37 +0200
+
+mpi4py (4.0.0-4) unstable; urgency=medium
+
+  * debian patch fix_symbols_PR549.patch applies upstream PR#549 to
+    fix access of library symbols during tests. Needed for mpich tests
+    on 32-bit arches.
+
+ -- Drew Parsons <dparsons@debian.org>  Fri, 13 Sep 2024 20:31:46 +0200
+
+mpi4py (4.0.0-3) unstable; urgency=medium
+
+  * Apply MPI4PY_TEST_SPAWN=false with tests on all arches to avoid
+    spawn failures with OpenMPI 4. Requires GITHUB_ACTIONS=true to
+    activate. Spawn is generally flakey with  OpenMPI 4. Reenable
+    spawn tests later with OpenMPI 5. Closes: #1081459.
+
+ -- Drew Parsons <dparsons@debian.org>  Thu, 12 Sep 2024 09:33:57 +0200
+
+mpi4py (4.0.0-2) unstable; urgency=medium
+
+  * update debian patch skip_ppc_failing_tests.patch to skip
+    testArgsOnlyAtRoot on powerpc. See upstream Issue#541.
+
+ -- Drew Parsons <dparsons@debian.org>  Tue, 10 Sep 2024 21:56:15 +0200
+
+mpi4py (4.0.0-1exp2) experimental; urgency=medium
+
+  * reinstate and update debian patch skip_ppc_failing_tests.patch.
+    Add ppc skip to testCodeCharStr.
+  * add debian patch skip_s390x_failing_tests.patch to skip
+    test_util_pool.TestProcessPool.test_apply on s390x
+  * reinstate debian/patches/skip_testPackUnpackExternal_sparc64.patch
+
+ -- Drew Parsons <dparsons@debian.org>  Fri, 30 Aug 2024 11:43:15 +0200
+
+mpi4py (4.0.0-1exp1) experimental; urgency=medium
+
+  * Major new upstream release
+    - Build-Depends: cython3
+    - applies or deprecates debian patches
+      docs_privacy.patch
+      fix_docs.patch
+      io_long_double_i386_2d868d7.patch
+      mpich_32bit_13e8af6.patch
+      up_no_modlibs
+  * doc build no longer uses usrman subdir
+  * mpi4py man page now provided in section 3
+  * drop deprecated debian/missing-sources
+  * new major release, make a clean sweep of patches: drop all debian
+    patches skipping tests.
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 29 Jul 2024 23:49:55 +0200
+
+mpi4py (3.1.6-9) unstable; urgency=medium
+
+  * debian patch mpich_32bit_13e8af6.patch applies upstream commit
+    13e8af6 to better handle 32-bit architectures.
+    Drop test_pack skipping from skip_failing_tests_32bit_mpich.patch
+
+ -- Drew Parsons <dparsons@debian.org>  Fri, 19 Jul 2024 11:47:14 +0200
+
+mpi4py (3.1.6-8) unstable; urgency=medium
+
+  * update debian patch skip_failing_tests_32bit_mpich.patch to skip
+    spawn tests (BaseTestSpawn) with mpich on all 32-bit systems.
+
+ -- Drew Parsons <dparsons@debian.org>  Wed, 17 Jul 2024 23:46:26 +0200
+
+mpi4py (3.1.6-7) unstable; urgency=medium
+
+  * update debian patch skip_failing_tests_32bit_mpich.patch to skip
+    testPackUnpackExternal with mpich on all 32-bit systems.
+    The previous i386 "success" was actually an ignored failure.
+
+ -- Drew Parsons <dparsons@debian.org>  Wed, 17 Jul 2024 13:39:02 +0200
+
+mpi4py (3.1.6-6) unstable; urgency=medium
+
+  * debian patch test_exception_MPI_ERR_ERRHANDLER_mpich.patch defines
+    MPI_ERR_ERRHANDLER=80 to enable mpich to pass test_exceptions.py.
+    MPI_ERR_ERRHANDLER is defined and used by mpich 4.2 but not yet
+    implemented by openmpi 4.1.6. See upstream Issue#514.
+
+ -- Drew Parsons <dparsons@debian.org>  Sun, 14 Jul 2024 10:42:42 +0200
+
+mpi4py (3.1.6-5) unstable; urgency=medium
+
+  * update skip_failing_tests_32bit_mpich.patch to skip all spawn tests
+    (BaseTestSpawn) for failing mpich 32-bit arches
+    (armel, armhf, hppa, powerpc)
+
+ -- Drew Parsons <dparsons@debian.org>  Fri, 12 Jul 2024 12:04:34 +0200
+
+mpi4py (3.1.6-4) unstable; urgency=medium
+
+  * update skip_failing_tests_32bit_mpich.patch to skip testCommSpawn
+    on 32-bit mpich, and apply spawn skips to armel, armhf, hppa.
+  * run tests with mpi -v verbose flag to help debug mpich failures
+
+ -- Drew Parsons <dparsons@debian.org>  Thu, 11 Jul 2024 21:58:29 +0200
+
+mpi4py (3.1.6-3) unstable; urgency=medium
+
+  * fix debian patch s)kip_failing_tests_32bit_mpich.patch
+    - treat armel, armhf, hppa machine ids as prefixes (arm*, parisc*)
+      (it's actually armv7l, parisc64 on porterboxes)
+    - skip testArgsOnlyAtRootMultiple (test_spawn) on powerpc with mpich
+  * update intersphinx_use_local_inventory.patch to include local
+    numpy docs. Build-Depends-Indep: python-numpy-doc
+
+ -- Drew Parsons <dparsons@debian.org>  Thu, 11 Jul 2024 16:00:41 +0200
+
+mpi4py (3.1.6-2) unstable; urgency=medium
+
+  * debian patch skip_failing_tests_32bit_mpich.patch skips failing
+    tests with 32-bit mpich. See upstream Issue#514. Closes: #1075980.
+    - armel, armhf, hppa: testPackUnpackExternal (test_pack.py)
+    - powerpc: testArgsOnlyAtRoot (test_spawn.py)
+
+ -- Drew Parsons <dparsons@debian.org>  Thu, 11 Jul 2024 11:22:23 +0200
+
+mpi4py (3.1.6-1) unstable; urgency=medium
+
+  * New upstream release.
+  * build and test over all supported (not requested) python versions
+  * build docs against default python version
+    (need built version to access MPI python extensions)
+  * Standards-Version: 4.7.0
+
+ -- Drew Parsons <dparsons@debian.org>  Wed, 08 May 2024 17:46:54 +0200
+
+mpi4py (3.1.5-7) unstable; urgency=medium
+
+  * Team upload
+
+  [ Zixing Liu ]
+  * Un-break Sphinx documentation generation by removing PYTHONPATH overrides
+    (Closes: #1066837)
+
+ -- Graham Inggs <ginggs@debian.org>  Wed, 08 May 2024 13:23:44 +0000
+
+mpi4py (3.1.5-6) unstable; urgency=medium
+
+  * debian patch intersphinx_use_local_inventory.patch uses python3
+    docs when building docs. Thanks Zixing Liu from Canonical.
+    Closes: #1066837, #1063409
+  * add Drew Parsons as uploader
+
+ -- Drew Parsons <dparsons@debian.org>  Mon, 06 May 2024 19:33:49 +0200
+
 mpi4py (3.1.5-5) unstable; urgency=medium
 
   * Team upload

@@ -1,11 +1,20 @@
 from mpi4py import MPI
 import mpiunittest as unittest
+import sys
 
 
 class TestInfoNull(unittest.TestCase):
 
     def testTruth(self):
         self.assertFalse(bool(MPI.INFO_NULL))
+
+    def testPickle(self):
+        from pickle import dumps, loads
+        null = loads(dumps(MPI.INFO_NULL))
+        self.assertIs(null, MPI.INFO_NULL)
+        null = loads(dumps(MPI.Info()))
+        self.assertIsNot(null, MPI.INFO_NULL)
+        self.assertEqual(null, MPI.INFO_NULL)
 
     def testPyMethods(self):
         inull = MPI.INFO_NULL
@@ -16,40 +25,94 @@ class TestInfoNull(unittest.TestCase):
         def pop():     inull.pop('k')
         def popitem(): inull.popitem()
         self.assertEqual(len(inull), 0)
-        self.assertFalse('key' in inull)
+        self.assertNotIn('key', inull)
         self.assertRaises(KeyError, getitem)
         self.assertRaises(KeyError, setitem)
         self.assertRaises(KeyError, delitem)
         self.assertRaises(KeyError, update)
         self.assertRaises(KeyError, pop)
         self.assertRaises(KeyError, popitem)
-        self.assertEqual(inull.get('key', None), None)
-        self.assertEqual(inull.pop('key', None), None)
+        self.assertIsNone(inull.get('key', None))
+        self.assertIsNone(inull.pop('key', None))
         self.assertEqual(inull.keys(), [])
         self.assertEqual(inull.values(), [])
         self.assertEqual(inull.items(), [])
         self.assertEqual(inull.copy(), inull)
         inull.clear()
 
+
 class TestInfoEnv(unittest.TestCase):
+
+    KEYS = (
+        "command",
+        "argv",
+        "maxprocs",
+        "soft",
+        "host",
+        "arch",
+        "wdir",
+        "file",
+        "thread_level",
+    )
 
     def testTruth(self):
         self.assertTrue(bool(MPI.INFO_ENV))
 
+    def testPickle(self):
+        from pickle import dumps, loads
+        ienv = loads(dumps(MPI.INFO_ENV))
+        self.assertIs(ienv, MPI.INFO_ENV)
+        ienv = loads(dumps(MPI.Info(MPI.INFO_ENV)))
+        self.assertIsNot(ienv, MPI.INFO_ENV)
+        self.assertEqual(ienv, MPI.INFO_ENV)
+
     def testPyMethods(self):
         env = MPI.INFO_ENV
-        if env == MPI.INFO_NULL: return
-        for key in ("command", "argv",
-                    "maxprocs", "soft",
-                    "host", "arch",
-                    "wdir", "file",
-                    "thread_level"):
+        for key in self.KEYS:
             v = env.Get(key)
+            del v
+
+    def testDup(self):
+        env = MPI.INFO_ENV
+        dup = env.Dup()
+        try:
+            for key in self.KEYS:
+                self.assertEqual(env.Get(key), dup.Get(key))
+        finally:
+            dup.Free()
+
+    def testCreateEnv(self):
+        try:
+            env = MPI.Info.Create_env()
+        except NotImplementedError:
+            if MPI.Get_version() >= (4, 0): raise
+            raise unittest.SkipTest("mpi-info-create-env")
+        for key in self.KEYS:
+            v = env.Get(key)
+            del v
+        try:
+            dup = env.Dup()
+            try:
+                for key in self.KEYS:
+                    self.assertEqual(env.Get(key), dup.Get(key))
+            finally:
+                dup.Free()
+        finally:
+            env.Free()
+        for args in (
+            None, [], (),
+            sys.executable,
+            [sys.executable],
+            (sys.executable,),
+        ):
+            MPI.Info.Create_env(args).Free()
+            MPI.Info.Create_env(args=args).Free()
+
 
 class TestInfo(unittest.TestCase):
 
     def setUp(self):
-        self.INFO  = MPI.Info.Create()
+        self.INFO = MPI.Info.Create()
 
     def tearDown(self):
         self.INFO.Free()
@@ -58,6 +121,20 @@ class TestInfo(unittest.TestCase):
 
     def testTruth(self):
         self.assertTrue(bool(self.INFO))
+
+    def testCreate(self):
+        data = {'key1': 'value1', 'key2': 'value2'}
+        for items in (None, {}, [], data, list(data.items())):
+            info = MPI.Info.Create(items)
+            if items is not None:
+                self.assertEqual(info.Get_nkeys(), len(items))
+                for k, v in dict(items).items():
+                    self.assertEqual(info.Get(k), v)
+            info.Free()
+
+    def testCreateBad(self):
+        with self.assertRaises(TypeError):
+            MPI.Info.Create(items=123)
 
     def testDup(self):
         info = self.INFO.Dup()
@@ -68,7 +145,7 @@ class TestInfo(unittest.TestCase):
 
     def testGet(self):
         value = self.INFO.Get('key')
-        self.assertEqual(value, None)
+        self.assertIsNone(value)
 
     def testGetNKeys(self):
         self.assertEqual(self.INFO.Get_nkeys(), 0)
@@ -87,20 +164,36 @@ class TestInfo(unittest.TestCase):
         nkeys = INFO.Get_nkeys()
         self.assertEqual(nkeys, 0)
         value = INFO.Get('key')
-        self.assertEqual(value, None)
+        self.assertIsNone(value)
+
+    def testPickle(self):
+        from pickle import dumps, loads
+        mold = self.INFO
+        info = loads(dumps(mold))
+        self.assertIsNot(info, mold)
+        self.assertNotEqual(info, mold)
+        self.assertEqual(info.items(), mold.items())
+        info.Free()
+        mold = self.INFO
+        mold.update([("foo", "bar"), ("answer", "42")])
+        info = loads(dumps(mold))
+        self.assertIsNot(info, mold)
+        self.assertNotEqual(info, mold)
+        self.assertEqual(info.items(), mold.items())
+        info.Free()
 
     def testPyMethods(self):
         INFO = self.INFO
 
         self.assertEqual(len(INFO), 0)
-        self.assertTrue('key' not in INFO)
+        self.assertNotIn('key', INFO)
         self.assertEqual(INFO.keys(), [])
         self.assertEqual(INFO.values(), [])
         self.assertEqual(INFO.items(), [])
 
         INFO['key'] = 'value'
         self.assertEqual(len(INFO), 1)
-        self.assertTrue('key' in INFO)
+        self.assertIn('key', INFO)
         self.assertEqual(INFO['key'], 'value')
         for key in INFO:
             self.assertEqual(key, 'key')
@@ -135,7 +228,7 @@ class TestInfo(unittest.TestCase):
         self.assertEqual(len(INFO), 0)
 
         self.assertEqual(len(INFO), 0)
-        self.assertTrue('key' not in INFO)
+        self.assertNotIn('key', INFO)
         self.assertEqual(INFO.keys(), [])
         self.assertEqual(INFO.values(), [])
         self.assertEqual(INFO.items(), [])
@@ -149,7 +242,7 @@ class TestInfo(unittest.TestCase):
         self.assertEqual(len(INFO), 1)
         self.assertEqual(INFO['key1'], 'value1')
         self.assertEqual(INFO.get('key1'), 'value1')
-        self.assertEqual(INFO.get('key2'),  None)
+        self.assertIsNone(INFO.get('key2'))
         self.assertEqual(INFO.get('key2', 'value2'),  'value2')
         INFO.update(key2='value2')
         self.assertEqual(len(INFO), 2)
@@ -157,7 +250,7 @@ class TestInfo(unittest.TestCase):
         self.assertEqual(INFO['key2'], 'value2')
         self.assertEqual(INFO.get('key1'), 'value1')
         self.assertEqual(INFO.get('key2'), 'value2')
-        self.assertEqual(INFO.get('key3'),  None)
+        self.assertIsNone(INFO.get('key3'))
         self.assertEqual(INFO.get('key3', 'value3'),  'value3')
         INFO.update([('key1', 'newval1')], key2='newval2')
         self.assertEqual(len(INFO), 2)
@@ -165,7 +258,7 @@ class TestInfo(unittest.TestCase):
         self.assertEqual(INFO['key2'], 'newval2')
         self.assertEqual(INFO.get('key1'), 'newval1')
         self.assertEqual(INFO.get('key2'), 'newval2')
-        self.assertEqual(INFO.get('key3'),  None)
+        self.assertIsNone(INFO.get('key3'))
         self.assertEqual(INFO.get('key3', 'newval3'),  'newval3')
         INFO.update(dict(key1='val1', key2='val2', key3='val3'))
         self.assertEqual(len(INFO), 3)
@@ -177,9 +270,9 @@ class TestInfo(unittest.TestCase):
         dupe.Free()
         INFO.clear()
         self.assertEqual(len(INFO), 0)
-        self.assertEqual(INFO.get('key1'), None)
-        self.assertEqual(INFO.get('key2'), None)
-        self.assertEqual(INFO.get('key3'), None)
+        self.assertIsNone(INFO.get('key1'))
+        self.assertIsNone(INFO.get('key2'))
+        self.assertIsNone(INFO.get('key3'))
         self.assertEqual(INFO.get('key1', 'value1'), 'value1')
         self.assertEqual(INFO.get('key2', 'value2'), 'value2')
         self.assertEqual(INFO.get('key3', 'value3'), 'value3')

@@ -2,12 +2,11 @@
 # Contact: dalcinl@gmail.com
 """Pickle-based communication using protocol 5."""
 
-import os as _os
-import sys as _sys
 import struct as _struct
 
 from .. import MPI
 from ..MPI import (
+    ROOT,
     PROC_NULL,
     ANY_SOURCE,
     ANY_TAG,
@@ -15,82 +14,21 @@ from ..MPI import (
 )
 
 from ..MPI import (
-    _typedict,
+    Pickle,
     _comm_lock,
+    _commctx_intra,
     _commctx_inter,
-    memory as _memory,
-    Pickle as _Pickle,
 )
 
-if _sys.version_info >= (3, 8):
-    from pickle import (
-        dumps as _dumps,
-        loads as _loads,
-        HIGHEST_PROTOCOL as _PROTOCOL,
-    )
-else:  # pragma: no cover
-    try:
-        from pickle5 import (
-            dumps as _dumps,
-            loads as _loads,
-            HIGHEST_PROTOCOL as _PROTOCOL,
-        )
-    except ImportError:
-        _PROTOCOL = MPI.Pickle().PROTOCOL
-
-        def _dumps(obj, *_p, **_kw):
-            return MPI.pickle.dumps(obj)
-
-        def _loads(buf, *_p, **_kw):
-            return MPI.pickle.loads(buf)
-
-
-def _buffer_handler(protocol, threshold):
-    bufs = []
-    if protocol is None or protocol < 0:
-        protocol = _PROTOCOL
-    if protocol < 5:
-        return bufs, None
-    buffer_len = len
-    buffer_raw = _memory
-    buffer_add = bufs.append
-    def buf_cb(buf):
-        buf = buffer_raw(buf)
-        if buffer_len(buf) >= threshold:
-            buffer_add(buf)
-            return False
-        return True
-    return bufs, buf_cb
-
-
-def _get_threshold(default):
-    varname = 'MPI4PY_PICKLE_THRESHOLD'
-    return int(_os.environ.get(varname, default))
-
-
-class Pickle(_Pickle):
-    """Pickle/unpickle Python objects using out-of-band buffers."""
-
-    THRESHOLD = _get_threshold(1024**2 // 4)  # 0.25 MiB
-
-    def __init__(self, dumps=_dumps, loads=_loads, protocol=_PROTOCOL):
-        """Initialize pickle context."""
-        # pylint: disable=useless-super-delegation
-        super().__init__(dumps, loads, protocol)
-
-    def dumps(self, obj):
-        """Serialize object to data and out-of-band buffers."""
-        bufs, buf_cb = _buffer_handler(self.PROTOCOL, self.THRESHOLD)
-        data = super().dumps(obj, buf_cb)
-        return data, bufs
-
-    def loads(self, data, bufs):
-        """Deserialize object from data and out-of-band buffers."""
-        # pylint: disable=useless-super-delegation
-        return super().loads(data, bufs)
-
-
 pickle = Pickle()
+
+
+def _pickle_dumps(obj):
+    return pickle.dumps_oob(obj)
+
+
+def _pickle_loads(data, bufs):
+    return pickle.loads_oob(data, bufs)
 
 
 def _bigmpi_create_type(basetype, count, blocksize):
@@ -110,6 +48,8 @@ class _BigMPI:
     """Support for large message counts."""
 
     blocksize = 1024**3  # 1 GiB
+    if MPI.VERSION >= 4:  # pragma: no cover
+        blocksize = 1024**6  # 1 EiB
 
     def __init__(self):
         self.cache = {}
@@ -124,8 +64,8 @@ class _BigMPI:
         cache.clear()
 
     def __call__(self, buf):
-        buf = _memory(buf)
-        count = len(buf)
+        buf = memoryview(buf)
+        count = buf.nbytes
         blocksize = self.blocksize
         if count < blocksize:
             return (buf, count, MPI.BYTE)
@@ -147,14 +87,13 @@ def _info_typecode():
 
 def _info_datatype():
     code = _info_typecode()
-    return _typedict[code]
+    return MPI.Datatype.fromcode(code)
 
 
 def _info_pack(info):
     code = _info_typecode()
     size = len(info)
-    sfmt = "{0}{1}".format(size, code)
-    return _struct.pack(sfmt, *info)
+    return _struct.pack(f"{size}{code}", *info)
 
 
 def _info_alloc(size):
@@ -167,18 +106,17 @@ def _info_unpack(info):
     code = _info_typecode()
     itemsize = _struct.calcsize(code)
     size = len(info) // itemsize
-    sfmt = "{0}{1}".format(size, code)
-    return _struct.unpack(sfmt, info)
+    return _struct.unpack(f"{size}{code}", info)
 
 
 def _new_buffer(size):
-    return MPI.memory.allocate(size)
+    return MPI.buffer.allocate(size)
 
 
 def _send_raw(comm, send, data, bufs, dest, tag):
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     info = [len(data)]
-    info.extend(len(_memory(sbuf)) for sbuf in bufs)
+    info.extend(len(sbuf) for sbuf in bufs)
     infotype = _info_datatype()
     info = _info_pack(info)
     send(comm, (info, infotype), dest, tag)
@@ -192,22 +130,22 @@ def _send(comm, send, obj, dest, tag):
     if dest == PROC_NULL:
         send(comm, (None, 0, MPI.BYTE), dest, tag)
         return
-    data, bufs = pickle.dumps(obj)
+    data, bufs = _pickle_dumps(obj)
     with _comm_lock(comm, 'send'):
         _send_raw(comm, send, data, bufs, dest, tag)
 
 
 def _isend(comm, isend, obj, dest, tag):
-    sreqs = []
     def send(comm, buf, dest, tag):
         sreqs.append(isend(comm, buf, dest, tag))
+    sreqs = []
     _send(comm, send, obj, dest, tag)
     request = Request(sreqs)
     return request
 
 
 def _recv_raw(comm, recv, buf, source, tag, status=None):
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     if status is None:
         status = Status()
     MPI.Comm.Probe(comm, source, tag, status)
@@ -219,7 +157,7 @@ def _recv_raw(comm, recv, buf, source, tag, status=None):
     MPI.Comm.Recv(comm, (info, infotype), source, tag, status)
     info = _info_unpack(info)
     if buf is not None:
-        buf = _memory.frombuffer(buf)
+        buf = memoryview(buf).cast('B')
         if len(buf) > info[0]:
             buf = buf[:info[0]]
         if len(buf) < info[0]:
@@ -235,13 +173,13 @@ def _recv_raw(comm, recv, buf, source, tag, status=None):
 
 
 def _recv(comm, recv, buf, source, tag, status):
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     if source == PROC_NULL:
         recv(comm, (None, 0, MPI.BYTE), source, tag, status)
         return None
     with _comm_lock(comm, 'recv'):
         data, bufs = _recv_raw(comm, recv, buf, source, tag, status)
-    return pickle.loads(data, bufs)
+    return _pickle_loads(data, bufs)
 
 
 def _mprobe(comm, mprobe, source, tag, status):
@@ -282,7 +220,7 @@ def _mrecv_none(rmsg, mrecv, status):
     _mrecv_info(rmsg, 0, status)
     noproc = MPI.MESSAGE_NO_PROC
     mrecv(noproc, (None, 0, MPI.BYTE))
-    data, bufs = pickle.dumps(None)
+    data, bufs = _pickle_dumps(None)
     return (bytearray(data), bufs)
 
 
@@ -308,16 +246,16 @@ def _mrecv(message, status):
     def mrecv(rmsg, buf):
         MPI.Message.Recv(rmsg, buf)
     data, bufs = _mrecv_data(message, mrecv, status)
-    return pickle.loads(data, bufs)
+    return _pickle_loads(data, bufs)
 
 
 def _imrecv(message):
-    rreqs = []
     def mrecv(rmsg, buf):
         rreqs.append(MPI.Message.Irecv(rmsg, buf))
+    rreqs = []
     data, bufs = _mrecv_data(message, mrecv)
     request = Request(rreqs)
-    setattr(request, '_data_bufs', (data, bufs))
+    setattr(request, '_data_bufs', (data, bufs))  # noqa: B010
     return request
 
 
@@ -327,7 +265,7 @@ def _req_load(request):
         delattr(request, '_data_bufs')
     if data_bufs is not None:
         data, bufs = data_bufs
-        obj = pickle.loads(data, bufs)
+        obj = _pickle_loads(data, bufs)
         return obj
     return None
 
@@ -364,7 +302,7 @@ def _bcast_intra_raw(comm, bcast, data, bufs, root):
     rank = comm.Get_rank()
     if rank == root:
         info = [len(data)]
-        info.extend(len(_memory(sbuf)) for sbuf in bufs)
+        info.extend(len(sbuf) for sbuf in bufs)
         infotype = _info_datatype()
         infosize = _info_pack([len(info)])
         bcast(comm, (infosize, infotype), root)
@@ -390,23 +328,23 @@ def _bcast_intra_raw(comm, bcast, data, bufs, root):
 def _bcast_intra(comm, bcast, obj, root):
     rank = comm.Get_rank()
     if rank == root:
-        data, bufs = pickle.dumps(obj)
+        data, bufs = _pickle_dumps(obj)
     else:
-        data, bufs = pickle.dumps(None)
+        data, bufs = _pickle_dumps(None)
     with _comm_lock(comm, 'bcast'):
         data, bufs = _bcast_intra_raw(comm, bcast, data, bufs, root)
-    return pickle.loads(data, bufs)
+    return _pickle_loads(data, bufs)
 
 
 def _bcast_inter(comm, bcast, obj, root):
     rank = comm.Get_rank()
     size = comm.Get_remote_size()
     comm, tag, localcomm, _ = _commctx_inter(comm)
-    if root == MPI.PROC_NULL:
+    if root == PROC_NULL:
         return None
-    elif root == MPI.ROOT:
+    elif root == ROOT:
         send = MPI.Comm.Send
-        data, bufs = pickle.dumps(obj)
+        data, bufs = _pickle_dumps(obj)
         _send_raw(comm, send, data, bufs, 0, tag)
         return None
     elif 0 <= root < size:
@@ -414,10 +352,10 @@ def _bcast_inter(comm, bcast, obj, root):
             recv = MPI.Comm.Recv
             data, bufs = _recv_raw(comm, recv, None, root, tag)
         else:
-            data, bufs = pickle.dumps(None)
+            data, bufs = _pickle_dumps(None)
         with _comm_lock(localcomm, 'bcast'):
             data, bufs = _bcast_intra_raw(localcomm, bcast, data, bufs, 0)
-        return pickle.loads(data, bufs)
+        return _pickle_loads(data, bufs)
     comm.Call_errhandler(MPI.ERR_ROOT)
     raise MPI.Exception(MPI.ERR_ROOT)
 
@@ -427,6 +365,147 @@ def _bcast(comm, bcast, obj, root):
         return _bcast_inter(comm, bcast, obj, root)
     else:
         return _bcast_intra(comm, bcast, obj, root)
+
+
+def _get_p2p_backend():
+    reqs = []
+
+    def send(comm, buf, dest, tag):
+        reqs.append(MPI.Comm.Isend(comm, buf, dest, tag))
+
+    def recv(comm, buf, source, tag):
+        MPI.Comm.Recv(comm, buf, source, tag)
+
+    return reqs, send, recv
+
+
+def _gather(comm, obj, root):
+    reqs, send, recv = _get_p2p_backend()
+    if comm.Is_inter():
+        comm, tag, *_ = _commctx_inter(comm)
+        size = comm.Get_remote_size()
+        if root == PROC_NULL:
+            send = recv = None
+        elif root == MPI.ROOT:
+            send = None
+        elif 0 <= root < size:
+            recv = None
+        else:
+            comm.Call_errhandler(MPI.ERR_ROOT)
+            raise MPI.Exception(MPI.ERR_ROOT)
+    else:
+        comm, tag = _commctx_intra(comm)
+        size = comm.Get_size()
+        if root != comm.Get_rank():
+            recv = None
+        if root < 0 or root >= size:
+            comm.Call_errhandler(MPI.ERR_ROOT)
+            raise MPI.Exception(MPI.ERR_ROOT)
+
+    if send:
+        data, bufs = _pickle_dumps(obj)
+        _send_raw(comm, send, data, bufs, root, tag)
+    objs = None
+    if recv:
+        objs = []
+        for source in range(size):
+            data, bufs = _recv_raw(comm, recv, None, source, tag)
+            obj = _pickle_loads(data, bufs)
+            objs.append(obj)
+    if send:
+        MPI.Request.Waitall(reqs)
+    return objs
+
+
+def _scatter(comm, objs, root):
+    # pylint: disable=too-many-branches
+    reqs, send, recv = _get_p2p_backend()
+    if comm.Is_inter():
+        comm, tag, *_ = _commctx_inter(comm)
+        size = comm.Get_remote_size()
+        if root == PROC_NULL:
+            send = recv = None
+        elif root == ROOT:
+            recv = None
+        elif 0 <= root < size:
+            send = None
+        else:
+            comm.Call_errhandler(MPI.ERR_ROOT)
+            raise MPI.Exception(MPI.ERR_ROOT)
+    else:
+        comm, tag = _commctx_intra(comm)
+        size = comm.Get_size()
+        if root != comm.Get_rank():
+            send = None
+        if root < 0 or root >= size:
+            comm.Call_errhandler(MPI.ERR_ROOT)
+            raise MPI.Exception(MPI.ERR_ROOT)
+
+    if send:
+        if objs is None:
+            objs = [None] * size
+        elif not isinstance(objs, list):
+            objs = list(objs)
+        if len(objs) != size:
+            raise ValueError(f"expecting {size} items, got {len(objs)}")
+        for dest, obj in enumerate(objs):
+            data, bufs = _pickle_dumps(obj)
+            _send_raw(comm, send, data, bufs, dest, tag)
+    obj = None
+    if recv:
+        data, bufs = _recv_raw(comm, recv, None, root, tag)
+        obj = _pickle_loads(data, bufs)
+    if send:
+        MPI.Request.Waitall(reqs)
+    return obj
+
+
+def _allgather(comm, obj):
+    reqs, send, recv = _get_p2p_backend()
+    if comm.Is_inter():
+        comm, tag, *_ = _commctx_inter(comm)
+        size = comm.Get_remote_size()
+    else:
+        comm, tag = _commctx_intra(comm)
+        size = comm.Get_size()
+
+    data, bufs = _pickle_dumps(obj)
+    for dest in range(size):
+        _send_raw(comm, send, data, bufs, dest, tag)
+    objs = []
+    for source in range(size):
+        data, bufs = _recv_raw(comm, recv, None, source, tag)
+        obj = _pickle_loads(data, bufs)
+        objs.append(obj)
+    MPI.Request.Waitall(reqs)
+    return objs
+
+
+def _alltoall(comm, objs):
+    reqs, send, recv = _get_p2p_backend()
+    if comm.Is_inter():
+        comm, tag, *_ = _commctx_inter(comm)
+        size = comm.Get_remote_size()
+    else:
+        comm, tag = _commctx_intra(comm)
+        size = comm.Get_size()
+
+    if objs is None:
+        objs = [None] * size
+    elif not isinstance(objs, list):
+        objs = list(objs)
+    if len(objs) != size:
+        raise ValueError(f"expecting {size} items, got {len(objs)}")
+    for dest, obj in enumerate(objs):
+        data, bufs = _pickle_dumps(obj)
+        _send_raw(comm, send, data, bufs, dest, tag)
+    objs = []
+    for source in range(size):
+        data, bufs = _recv_raw(comm, recv, None, source, tag)
+        obj = _pickle_loads(data, bufs)
+        objs.append(obj)
+    MPI.Request.Waitall(reqs)
+    return objs
 
 
 class Request(tuple):
@@ -466,15 +545,18 @@ class Request(tuple):
         for req in self:
             req.Free()
 
+    def free(self) -> None:
+        """Free a communication request."""
+        for req in self:
+            req.free()
+
     def cancel(self):
         """Cancel a communication request."""
-        # pylint: disable=invalid-name
         for req in self:
             req.Cancel()
 
     def get_status(self, status=None):
         """Non-destructive test for the completion of a request."""
-        # pylint: disable=invalid-name
         statuses = [status] + [None] * max(len(self) - 1, 0)
         return all(map(MPI.Request.Get_status, self, statuses))
 
@@ -485,6 +567,16 @@ class Request(tuple):
     def wait(self, status=None):
         """Wait for a request to complete."""
         return _test(self, MPI.Request.Waitall, status)[1]
+
+    @classmethod
+    def get_status_all(cls, requests, statuses=None):
+        """Non-destructive test for the completion of all requests."""
+        arglist = [requests]
+        if statuses is not None:
+            ns, nr = len(statuses), len(requests)
+            statuses += [Status() for _ in range(ns, nr)]
+            arglist.append(statuses)
+        return all(map(Request.get_status, *arglist))
 
     @classmethod
     def testall(cls, requests, statuses=None):
@@ -528,6 +620,11 @@ class Message(tuple):
         """Return ``bool(self)``."""
         return any(msg for msg in self)
 
+    def free(self) -> None:
+        """Do nothing."""
+        for msg in self:
+            msg.free()
+
     def recv(self, status=None):
         """Blocking receive of matched message."""
         return _mrecv(self, status)
@@ -553,6 +650,10 @@ class Message(tuple):
 
 class Comm(MPI.Comm):
     """Communicator."""
+
+    def __new__(cls, comm=None):
+        """Create and return a new communicator."""
+        return MPI.Comm.__new__(cls, comm)
 
     def send(self, obj, dest, tag=0):
         """Blocking send in standard mode."""
@@ -586,7 +687,7 @@ class Comm(MPI.Comm):
         return _recv(self, MPI.Comm.Recv, buf, source, tag, status)
 
     def irecv(self,
-              buf=None, source=ANY_SOURCE, tag=ANY_TAG):
+              buf=None, source=ANY_SOURCE, tag=ANY_TAG):  # noqa: ARG002
         """Nonblocking receive."""
         raise RuntimeError("unsupported")
 
@@ -595,7 +696,7 @@ class Comm(MPI.Comm):
                  recvbuf=None, source=ANY_SOURCE, recvtag=ANY_TAG,
                  status=None):
         """Send and receive."""
-        # pylint: disable=too-many-arguments
+        # pylint: disable=too-many-arguments,too-many-positional-arguments
         sreq = _isend(self, MPI.Comm.Isend, sendobj, dest, sendtag)
         robj = _recv(self, MPI.Comm.Recv, recvbuf, source, recvtag, status)
         MPI.Request.Waitall(sreq)
@@ -616,6 +717,22 @@ class Comm(MPI.Comm):
     def bcast(self, obj, root=0):
         """Broadcast."""
         return _bcast(self, MPI.Comm.Bcast, obj, root)
+
+    def gather(self, sendobj, root=0):
+        """Gather."""
+        return _gather(self, sendobj, root)
+
+    def scatter(self, sendobj, root=0):
+        """Scatter."""
+        return _scatter(self, sendobj, root)
+
+    def allgather(self, sendobj):
+        """Gather to All."""
+        return _allgather(self, sendobj)
+
+    def alltoall(self, sendobj):
+        """All to All Scatter/Gather."""
+        return _alltoall(self, sendobj)
 
 
 class Intracomm(Comm, MPI.Intracomm):

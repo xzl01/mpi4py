@@ -6,8 +6,8 @@ except ImportError:
 
 # transpose a matrix a into b
 
-a = numpy.empty((100, 100), dtype=float, order='fortran')
-b = numpy.empty((100, 100), dtype=float, order='fortran')
+a = numpy.empty((100, 100), dtype=float, order='f')
+b = numpy.empty((100, 100), dtype=float, order='f')
 a.flat = numpy.arange(a.size, dtype=float)
 
 lb, sizeofdouble = MPI.DOUBLE.Get_extent()
@@ -19,7 +19,7 @@ row = MPI.DOUBLE.Create_vector(100, 1, 100)
 # create datatype for matrix in row-major order
 
 # (one hundred copies of the row datatype, strided one word
-#  apart; the succesive row datatypes are interleaved)
+#  apart; the successive row datatypes are interleaved)
 xpose = row.Create_hvector(100, 1, sizeofdouble)
 xpose.Commit()
 

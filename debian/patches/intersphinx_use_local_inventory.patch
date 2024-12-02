@@ -1,0 +1,20 @@
+Description: Use local InterSphinx inventory data
+Author: Zixing Liu <zixing.liu@canonical.com>
+Forwarded: not-needed
+Last-Update: 2024-03-13
+
+Index: mpi4py/docs/source/conf.py
+===================================================================
+--- mpi4py.orig/docs/source/conf.py	2024-07-29 23:48:13.666534328 +0200
++++ mpi4py/docs/source/conf.py	2024-07-29 23:48:47.986877001 +0200
+@@ -88,8 +88,8 @@
+ }
+ 
+ intersphinx_mapping = {
+-    'python': ('https://docs.python.org/3/', None),
+-    'numpy': ('https://numpy.org/doc/stable/', None),
++    'python': ('https://docs.python.org/3/', ('/usr/share/doc/python3/html/objects.inv', None)),
++    'numpy': ('https://numpy.org/doc/stable/', ('/usr/share/doc/python-numpy/html/objects.inv', None)),
+     'dlpack': ('https://dmlc.github.io/dlpack/latest/', None),
+     'numba': ('https://numba.readthedocs.io/en/stable/', None),
+ }

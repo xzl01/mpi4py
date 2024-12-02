@@ -1,18 +1,15 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
 
-PY3 = $(shell py3versions -vd)
-PY3VERS = $(shell py3versions -vr)
+DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+
+PY3DEF = $(shell py3versions -vd)
+PY3VERS = $(shell py3versions -vs)
 
 LAST_CHANGE = $(shell dpkg-parsechangelog -S Date)
 BUILD_DATE  = $(shell LC_ALL=C date -u "+%B %d, %Y" -d "$(LAST_CHANGE)")
 
-# build-time tests should be more reliable with these settings
-# see https://github.com/mpi4py/setup-mpi/blob/master/setup-mpi.sh#L65
-export OMPI_MCA_plm=isolated
-export OMPI_MCA_rmaps_base_oversubscribe=true
-export OMPI_MCA_btl_base_warn_component_unused=false
-export OMPI_MCA_btl_vader_single_copy_mechanism=none
+export PRTE_MCA_rmaps_default_mapping_policy=:oversubscribe
 
 # Specify a specific version of MPI to use in the build, otherwise
 # just use the default.
@@ -38,6 +35,13 @@ ifneq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
   RUNTEST=no
 endif
 
+ifeq ($(DEB_HOST_ARCH),mips64el)
+# mips64el times out. Run tests on default python only.
+    PY3VERS_TESTS = $(PY3DEF)
+else
+    PY3VERS_TESTS = $(PY3VERS)
+endif
+
 # hurd fails a couple of tests
 # but hell, hurd needs all the help it can get, so let it pass
 ARCH_IGNORE_FAILED_TESTS = hurd-i386
@@ -47,6 +51,28 @@ IGNORE_FAILED_TESTS=/bin/false
 ifneq (,$(findstring $(space)$(DEB_HOST_ARCH)$(space), $(space)$(ARCH_IGNORE_FAILED_TESTS)$(space)))
   IGNORE_FAILED_TESTS=/bin/true
 endif
+
+# segfault via PMIX (PMIX_ERR_BAD_PARAM) in test_dynproc.TestDPM
+SKIP_PMIX_DPM_CONNECT_ARCH_LIST = s390x alpha ppc64 sparc64
+ifneq (,$(findstring $(space)$(DEB_HOST_ARCH)$(space), $(space)$(SKIP_PMIX_DPM_CONNECT_ARCH_LIST)$(space)))
+    SKIP_TEST_LIST += TestDPM
+endif
+
+# failing RMA tests from test_rma_nb
+SKIP_RMA_ACCUMULATE_ARCH_LIST = s390x ppc64 sparc64
+ifneq (,$(findstring $(space)$(DEB_HOST_ARCH)$(space), $(space)$(SKIP_RMA_ACCUMULATE_ARCH_LIST)$(space)))
+    SKIP_TEST_LIST += testAccumulate testGetAccumulate
+endif
+
+ifeq ($(DEB_HOST_ARCH),mips64el)
+    SKIP_TEST_LIST += TestRMA
+endif
+
+ifeq ($(DEB_HOST_ARCH),sparc64)
+    # OpenMPI broke memory alignment on sparc64, see https://github.com/mpi4py/mpi4py/issues/147
+    SKIP_TEST_LIST += testPackUnpackExternal
+endif
+
 
 %:
 	dh $@ --with sphinxdoc --buildsystem pybuild
@@ -64,8 +90,8 @@ override_dh_auto_build-arch:
 		--build-args "--mpicc=/usr/bin/mpicc$(MPI) --mpicxx=/usr/bin/mpicxx$(MPI)"
 
 override_dh_auto_build-indep: override_dh_auto_build-arch
-	PYTHONPATH=`pybuild --print "{build_dir}"` \
-	 make -C docs/source/usrman/ html man info latexpdf SPHINXOPTS="-D today=\"$(BUILD_DATE)\""
+	PYTHONPATH=`pybuild -p $(PY3DEF) --print "{build_dir}"` \
+	  make -C docs/source/ html man info latexpdf SPHINXOPTS="-D today=\"$(BUILD_DATE)\""
 
 override_dh_auto_install:
 	dh_auto_install
@@ -92,14 +118,29 @@ override_dh_auto_test:
 	if [ "$(RUNTEST)" = "no" ]; then \
 	  echo Build tests have been disabled; \
 	else \
-	  for vv in $(PY3VERS); do \
+	SKIP_TESTS=""; \
+	list_initialised=0; \
+	for t in $(SKIP_TEST_LIST); do \
+	    if [ $${list_initialised} = 0 ]; then \
+	        SKIP_TESTS="-x $$t"; \
+	        list_initialised=1; \
+	    else \
+	        SKIP_TESTS="$${SKIP_TESTS} -x $$t"; \
+	    fi; \
+	done; \
+	echo "skipping tests: $${SKIP_TESTS}"; \
+	  for vv in $(PY3VERS_TESTS); do \
 	  echo "I: testing using python$$vv"; \
 	   echo "I: running tests with single process"; \
 	   PYTHONPATH=`pybuild -p $$vv --print "{build_dir}"` \
-	    /usr/bin/python$$vv $(CURDIR)/test/runtests.py -v || $(IGNORE_FAILED_TESTS); \
-	   echo "I: running tests with MPI (5 processes)"; \
+	    GITHUB_ACTIONS=true MPI4PY_TEST_SPAWN=false \
+	    /usr/bin/python$$vv $(CURDIR)/test/runtests.py -v $${SKIP_TESTS} || $(IGNORE_FAILED_TESTS); \
+	   nproc=`nproc`; MIN_PROC=$$(( nproc > 2 ? nproc : 2 )); \
+	   NUM_PROC=$$(( MIN_PROC > 5 ? 5 : MIN_PROC )); \
+	   echo "I: running tests with MPI ($$NUM_PROC processes)"; \
 	   PYTHONPATH=`pybuild -p $$vv --print "{build_dir}"` \
-	    mpirun -n 5 /usr/bin/python$$vv $(CURDIR)/test/runtests.py -fv || $(IGNORE_FAILED_TESTS); \
+	    GITHUB_ACTIONS=true MPI4PY_TEST_SPAWN=false \
+	    mpirun -v -n $$NUM_PROC /usr/bin/python$$vv $(CURDIR)/test/runtests.py -fv $${SKIP_TESTS} || $(IGNORE_FAILED_TESTS); \
 	  done; \
 	fi
 
@@ -122,7 +163,7 @@ override_dh_auto_clean:
 	dh_auto_clean $@
 	rm -rf `find -name build -type d`
 	rm -rf `find -name _build -type d`
-	rm -rf docs/source/usrman/reference
+	rm -rf docs/source/reference
 
 	: # Remove Cython generated files
 	rm -f src/mpi4py.MPE.c src/mpi4py.MPI.c src/include/mpi4py/mpi4py.MPI_api.h

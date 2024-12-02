@@ -2,7 +2,7 @@ from mpi4py import MPI
 import mpiunittest as unittest
 
 
-class BaseTestMessageZero(object):
+class BaseTestMessageZero:
 
     null_b = [None, MPI.INT]
     null_v = [None, (0, None), MPI.INT]
@@ -31,7 +31,6 @@ class BaseTestMessageZero(object):
         comm.Alltoallv(self.null_v, self.null_v)
 
     @unittest.skipMPI('openmpi')
-    @unittest.skipMPI('SpectrumMPI')
     def testReductions(self):
         comm = self.COMM
         comm.Reduce(self.null_b, self.null_b)

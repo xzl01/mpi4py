@@ -1,21 +1,20 @@
 Index: mpi4py/test/test_pack.py
 ===================================================================
---- mpi4py.orig/test/test_pack.py	2024-01-01 14:18:07.394405833 +0100
-+++ mpi4py/test/test_pack.py	2024-01-01 14:18:27.434559143 +0100
-@@ -2,7 +2,7 @@
- import mpiunittest as unittest
- from arrayimpl import allclose
+--- mpi4py.orig/test/test_pack.py	2024-08-30 11:41:07.974815861 +0200
++++ mpi4py/test/test_pack.py	2024-08-30 11:41:32.395011906 +0200
+@@ -3,6 +3,7 @@
  import arrayimpl
--
+ import os, sys, platform
+ 
 +import platform
  
- class BaseTestPack(object):
- 
-@@ -65,6 +65,7 @@
-                 pack_size = datatype.Pack_external_size(EXT32, count)
-                 real_size = pack_size - overhead
+ def allclose(a, b, rtol=1.e-5, atol=1.e-8):
+     try:
+@@ -88,6 +89,7 @@
+                         real_size = pack_size - overhead
+                         self.assertGreaterEqual(real_size, 0)
  
 +    @unittest.skipMPI("openmpi(<5.0)", platform.machine() == 'sparc64')
      def testPackUnpackExternal(self):
-         for array, typecode1 in arrayimpl.subTest(self):
-             if unittest.is_mpi_gpu('mpich', array): continue
+         for array, typecode1 in arrayimpl.loop():
+             with arrayimpl.test(self):

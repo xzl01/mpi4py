@@ -14,10 +14,6 @@ mpi4py.rc.thread_level = 'multiple'
 from mpi4py import MPI
 import mpiunittest as unittest
 
-pypy3_lt_50 = (hasattr(sys, 'pypy_version_info') and
-               sys.version_info[0] == 3 and
-               sys.pypy_version_info < (5, 0))
-
 class TestMPIThreads(unittest.TestCase):
 
     def testThreadLevels(self):
@@ -26,10 +22,10 @@ class TestMPIThreads(unittest.TestCase):
                   MPI.THREAD_SERIALIZED,
                   MPI.THREAD_MULTIPLE]
         for i in range(len(levels)-1):
-            self.assertTrue(levels[i] < levels[i+1])
+            self.assertLess(levels[i], levels[i+1])
         try:
             provided = MPI.Query_thread()
-            self.assertTrue(provided in levels)
+            self.assertIn(provided, levels)
         except NotImplementedError:
             self.skipTest('mpi-query_thread')
 
@@ -43,9 +39,8 @@ class TestMPIThreads(unittest.TestCase):
         self.assertEqual(flag, main)
         if VERBOSE:
             log = lambda m: sys.stderr.write(m+'\n')
-            log("%s: MPI.Is_thread_main() -> %s" % (name, flag))
+            log(f"{name}: MPI.Is_thread_main() -> {flag}")
 
-    @unittest.skipIf(pypy3_lt_50, 'pypy3(<5.0)')
     def testIsThreadMainInThread(self):
         try:
             provided = MPI.Query_thread()

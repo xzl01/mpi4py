@@ -1,3 +1,7 @@
+#define Py_LIMITED_API 0x03060000
+#define MPI4PY_LIMITED_API 1
+#define MPI4PY_LIMITED_API_SKIP_MESSAGE 1
+#define MPI4PY_LIMITED_API_SKIP_SESSION 1
 #define MPICH_SKIP_MPICXX 1
 #define OMPI_SKIP_MPICXX  1
 #include <Python.h>
@@ -47,29 +51,6 @@ static struct PyMethodDef hw_methods[] = {
   {NULL,       NULL,                     0,            NULL} /* sentinel */
 };
 
-#if PY_MAJOR_VERSION < 3
-/* --- Python 2 --- */
-
-PyMODINIT_FUNC inithelloworld(void)
-{
-  PyObject *m = NULL;
-
-  /* Initialize mpi4py C-API */
-  if (import_mpi4py() < 0) goto bad;
-
-  /* Module initialization  */
-  m = Py_InitModule("helloworld", hw_methods);
-  if (m == NULL) goto bad;
-
-  return;
-
- bad:
-  return;
-}
-
-#else
-/* --- Python 3 --- */
-
 static struct PyModuleDef hw_module = {
   PyModuleDef_HEAD_INIT,
   "helloworld", /* m_name */
@@ -82,8 +63,8 @@ static struct PyModuleDef hw_module = {
   NULL          /* m_free */
 };
 
-PyMODINIT_FUNC
-PyInit_helloworld(void)
+PyMODINIT_FUNC PyInit_helloworld(void);
+PyMODINIT_FUNC PyInit_helloworld(void)
 {
   PyObject *m = NULL;
 
@@ -99,8 +80,6 @@ PyInit_helloworld(void)
  bad:
   return NULL;
 }
-
-#endif
 
 /* -------------------------------------------------------------------------- */
 

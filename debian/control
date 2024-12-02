@@ -1,7 +1,8 @@
 Source: mpi4py
 Maintainer: Debian Science Maintainers <debian-science-maintainers@lists.alioth.debian.org>
-Uploaders: Yaroslav Halchenko <debian@onerussian.com>,
-           Michael Hanke <michael.hanke@gmail.com>
+Uploaders: Drew Parsons <dparsons@debian.org>,
+           Yaroslav Halchenko <debian@onerussian.com>,
+           Michael Hanke <michael.hanke@gmail.com>,
 Section: python
 Priority: optional
 Build-Depends: debhelper-compat (= 13),
@@ -9,15 +10,17 @@ Build-Depends: debhelper-compat (= 13),
                mpi-default-dev,
                mpi-default-bin,
                openssh-client,
-               cython3-legacy,
+               cython3,
                python3-all-dev,
                python3-numpy,
                python3-sphinx,
                python3-setuptools
 Build-Depends-Indep: texinfo, texlive,
  latexmk, tex-gyre,
- texlive-latex-extra
-Standards-Version: 4.6.2
+ texlive-latex-extra,
+ python3-doc,
+ python-numpy-doc
+Standards-Version: 4.7.0
 Vcs-Browser: https://salsa.debian.org/science-team/mpi4py
 Vcs-Git: https://salsa.debian.org/science-team/mpi4py.git
 Homepage: https://github.com/mpi4py/mpi4py
@@ -30,6 +33,7 @@ Depends: ${shlibs:Depends},
          ${python3:Depends},
          mpi-default-bin
 Suggests: python3-numpy
+Breaks:  python3-pyzoltan (<< 1.0.1-10~)
 Description: bindings of the Message Passing Interface (MPI) standard
  MPI for Python (mpi4py) provides bindings of the Message Passing
  Interface (MPI) standard for the Python programming language,

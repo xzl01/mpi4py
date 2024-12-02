@@ -1,4 +1,6 @@
 import os
+import shlex
+import shutil
 import cffi
 
 ffi = cffi.FFI()
@@ -7,7 +9,7 @@ with open("libmpi.c.in") as f:
 with open("libmpi.h") as f:
     ffi.cdef(f.read())
 
-class mpicompiler(object):
+class mpicompiler:
 
     from cffi import ffiplatform
 
@@ -23,19 +25,17 @@ class mpicompiler(object):
         self.ffiplatform.compile = self.ffi_compile
 
     def configure(self, compiler):
-        from distutils.util import split_quoted
-        from distutils.spawn import find_executable
         def fix_command(command, cmd):
             if not cmd: return
-            cmd = split_quoted(cmd)
-            exe = find_executable(cmd[0])
+            cmd = shlex.split(cmd)
+            exe = shutil.which(cmd[0])
             if not exe: return
             command[0] = exe
             command += cmd[1:]
         fix_command(compiler.compiler_so, self.cc)
         fix_command(compiler.linker_so, self.ld)
 
-    def compile(self, *args, **kargs):
+    def compile(self, *args, **kwargs):
         from distutils.command import build_ext
         customize_compiler_orig = build_ext.customize_compiler
         def customize_compiler(compiler):
@@ -43,7 +43,7 @@ class mpicompiler(object):
             self.configure(compiler)
         build_ext.customize_compiler = customize_compiler
         try:
-            return self.ffi_compile(*args, **kargs)
+            return self.ffi_compile(*args, **kwargs)
         finally:
             build_ext.customize_compiler = customize_compiler_orig
 
